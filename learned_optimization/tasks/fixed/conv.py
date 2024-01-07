@@ -36,7 +36,8 @@ def _cross_entropy_pool_loss(
     initializers: Optional[hk.initializers.Initializer] = None,
     norm_fn: Callable[[jnp.ndarray], jnp.ndarray] = lambda x: x,
     pool: str = "avg",
-    num_classes: int = 10):
+    num_classes: int = 10,
+    residual: bool = False):
   """Haiku function for a conv net with pooling and cross entropy loss."""
   if not initializers:
     initializers = {}
@@ -44,10 +45,14 @@ def _cross_entropy_pool_loss(
   def _fn(batch):
     net = batch["image"]
     strides = [2] + [1] * (len(hidden_units) - 1)
-    for hs, ks, stride in zip(hidden_units, [3] * len(hidden_units), strides):
-      net = hk.Conv2D(hs, ks, stride=stride)(net)
-      net = activation_fn(net)
-      net = norm_fn(net)
+    for i, (hs, ks, stride) in enumerate(zip(hidden_units, [3] * len(hidden_units), strides)):
+      tmp = hk.Conv2D(hs, ks, stride=stride)(net)
+      tmp = activation_fn(tmp)
+      tmp = norm_fn(tmp)
+      if i > 0 and residual:
+        net = net + tmp
+      else:
+        net = tmp
 
     if pool == "avg":
       net = jnp.mean(net, [1, 2])
@@ -111,6 +116,17 @@ def Conv_Cifar10_8_16x32_layernorm():
                                            jax.nn.relu,
                                            num_classes=10,
                                            norm_fn=norm_fn)
+  datasets = image.cifar10_datasets(batch_size=128, image_size=(8, 8))
+  return _ConvTask(base_model_fn, datasets)
+
+
+@gin.configurable
+def Conv_Cifar10_8_32x32_residual():
+  """A 3 hidden layer convnet designed for 16x16 cifar10."""
+  base_model_fn = _cross_entropy_pool_loss([32, 32],
+                                           jax.nn.relu,
+                                           num_classes=10,
+                                           residual=True)
   datasets = image.cifar10_datasets(batch_size=128, image_size=(8, 8))
   return _ConvTask(base_model_fn, datasets)
 

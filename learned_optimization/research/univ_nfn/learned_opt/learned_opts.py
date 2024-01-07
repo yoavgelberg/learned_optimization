@@ -37,6 +37,7 @@ from learned_optimization.learned_optimizers import common
 from learned_optimization.optimizers import base as opt_base
 from learned_optimization.research.univ_nfn.nfn import universal_layers
 from learned_optimization.research.univ_nfn.nfn import utils as nfu
+from haiku._src import data_structures
 
 
 MetaParams = Any
@@ -97,10 +98,11 @@ def make_hk_perm_spec(mlp_params):
   return perm_spec
 
 
-def make_hk_cnn_perm_spec(params):
+def make_hk_cnn_perm_spec(params, residual=False):
   """Produces perm spec for a haiku cnn."""
   perm_spec = {}
   num_convs = len([k for k in params if k.startswith('conv2_d')])
+  neuron_idx = 0
   for i in range(num_convs):
     if i == 0:
       conv_name = 'conv2_d'
@@ -108,13 +110,16 @@ def make_hk_cnn_perm_spec(params):
     else:
       conv_name = f'conv2_d_{i}'
       ln_name = f'layer_norm_{i}'
+    next_idx = neuron_idx + int((not residual) or (i == 0))
     perm_spec[conv_name] = {
-        'w': (-i, -(len(params) + i), i, i + 1),
-        'b': (i + 1,),
+        'w': (-i, -(len(params) + i), neuron_idx, next_idx),
+        'b': (next_idx,),
     }
     if ln_name in params:  # layernorm is optional
-      perm_spec[ln_name] = {'offset': (i + 1,), 'scale': (i + 1,)}
-  perm_spec['linear'] = {'w': (num_convs, num_convs + 1), 'b': (num_convs + 1,)}  # final linear layer
+      perm_spec[ln_name] = {'offset': (next_idx,), 'scale': (next_idx,)}
+    neuron_idx = next_idx
+  perm_spec['linear'] = {'w': (neuron_idx, neuron_idx + 1), 'b': (neuron_idx + 1,)}  # final linear layer
+  print(perm_spec)
   return perm_spec
 
 
@@ -287,8 +292,10 @@ class HybridMLPNFN(nn.Module):
     self.final = make_layer(out_channels, hidden_channels)
 
   def __call__(self, inp_features):
+    inp_features = data_structures.to_mutable_dict(inp_features)
     features = universal_layers.nf_relu(self.mlp(inp_features))
-    return self.final(features, self.perm_spec.unfreeze())
+    features = self.final(features, self.perm_spec.unfreeze())
+    return data_structures.to_immutable_dict(features)
 
 
 class SGDControl(lopt_base.LearnedOptimizer):
@@ -494,10 +501,11 @@ class ResidualOptNFN(ResidualOpt):
       ptwise_init=False,
       pos_emb=False,
       hybrid=False,
+      conv_is_residual=False,
   ):
     example_params = task.init(jax.random.PRNGKey(0))
     if 'conv2_d' in example_params:
-      perm_spec = make_hk_cnn_perm_spec(example_params)
+      perm_spec = make_hk_cnn_perm_spec(example_params, conv_is_residual)
     elif 'irnn/linear' in example_params:
       perm_spec = make_hk_irnn_perm_spec(example_params)
     elif 'transformer/embed' in example_params:

@@ -21,8 +21,10 @@ from absl import flags
 import jax
 from learned_optimization import filesystem
 from learned_optimization import summary
+from learned_optimization import eval_training
 from learned_optimization.learned_optimizers import base as lopt_base  # pylint: disable=unused-import
 from learned_optimization.learned_optimizers import mlp_lopt
+from learned_optimization.research.univ_nfn.learned_opt import learned_opts
 from learned_optimization.optimizers import base as opt_base
 from learned_optimization.outer_trainers import gradient_learner
 from learned_optimization.outer_trainers import lopt_truncated_step
@@ -30,6 +32,7 @@ from learned_optimization.outer_trainers import truncated_pes
 from learned_optimization.outer_trainers import truncation_schedule
 from learned_optimization.tasks import base as tasks_base
 from learned_optimization.tasks.fixed import image_mlp
+from learned_optimization.tasks.fixed import conv
 import numpy as np
 import tqdm
 
@@ -37,22 +40,22 @@ FLAGS = flags.FLAGS
 
 
 def train(train_log_dir: str,
-          outer_iterations: int = 10000,
+          outer_iterations: int = 30000,
           task: Optional[tasks_base.Task] = None):
   """Train a learned optimizer!"""
 
   if not task:
-    task = image_mlp.ImageMLP_FashionMnist8_Relu32()
+    task = conv.Conv_Cifar10_8_16x32()
 
   #### Hparams
   # learning rate used to train the learned optimizer
-  outer_learning_rate = 3e-4
+  outer_learning_rate = 1e-4
   # max length of inner training unrolls
-  max_length = 10000
+  max_length = 2_000
   # number of tasks to train in parallel
-  num_tasks = 16
+  num_tasks = 8
   # length of truncations for PES
-  trunc_length = 50
+  trunc_length = 100
 
   key = jax.random.PRNGKey(int(np.random.randint(0, int(2**30))))
 
@@ -62,12 +65,16 @@ def train(train_log_dir: str,
 
   theta_opt = opt_base.Adam(outer_learning_rate)
 
-  lopt = mlp_lopt.MLPLOpt()
-  # Also try out learnable hparams!
-  # lopt = lopt_base.LearnableAdam()
+  # lopt = learned_opts.ResidualOptNFN(
+  #   task, step_mult=1e-1, out_mult=1e-3, ptwise_init=True, hybrid=True,
+  #   conv_is_residual=True,
+  # )
+  lopt = learned_opts.ResidualOptMLP(task, step_mult=1e-1, out_mult=1e-3)
 
-  trunc_sched = truncation_schedule.LogUniformLengthSchedule(
-      min_length=100, max_length=max_length)
+  # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
+  #     min_length=100, max_length=max_length)
+  trunc_sched = truncation_schedule.ConstantTruncationSchedule(
+    total_length=max_length)
 
   task_family = tasks_base.single_task_to_family(task)
 
@@ -87,6 +94,15 @@ def train(train_log_dir: str,
       lopt, gradient_estimators, theta_opt)
 
   outer_trainer_state = outer_trainer.init(key)
+
+  eval_key = jax.random.PRNGKey(int(np.random.randint(0, int(2**30))))
+  theta0 = outer_trainer.get_meta_params(outer_trainer_state)
+  print("Theta param count", sum([x.size for x in jax.tree_util.tree_leaves(theta0)]))
+  init_opt = lopt.opt_fn(theta0)
+  initial_results = eval_training.single_task_training_curves(
+      task, init_opt, max_length, eval_key)
+  for i, val in enumerate(initial_results['train/loss']):
+    summary_writer.scalar("single_task/init", val, step=i)
 
   losses = []
   for i in tqdm.trange(outer_iterations):
@@ -108,6 +124,13 @@ def train(train_log_dir: str,
           summary_writer.scalar(metric_name, v, step=i)
       summary_writer.flush()
 
+  thetaT = outer_trainer.get_meta_params(outer_trainer_state)
+  final_opt = lopt.opt_fn(thetaT)
+  final_results = eval_training.single_task_training_curves(
+      task, final_opt, max_length, eval_key)
+  for i, val in enumerate(final_results['train/loss']):
+    summary_writer.scalar("single_task/final", val, step=i)
+  summary_writer.flush()
 
 def main(unused_argv: Sequence[str]) -> None:
   train(FLAGS.train_log_dir)
