@@ -277,6 +277,7 @@ class HybridMLPNFN(nn.Module):
   num_layers: int
   perm_spec: Any
   ptwise_init: bool = False
+  use_baseline: bool = False
 
   def setup(self):
     out_channels, hidden_channels = self.out_channels, self.hidden_channels
@@ -285,8 +286,12 @@ class HybridMLPNFN(nn.Module):
 
     def make_layer(out_chan, in_chan):
       if self.ptwise_init:
+        if self.use_baseline:
+          return universal_layers.PointwiseInitNFLinearCNN(out_chan, in_chan)
         return universal_layers.PointwiseInitNFLinear(out_chan, in_chan)
       else:
+        if self.use_baseline:
+          return universal_layers.NFLinearCNN(out_chan, in_chan)
         return universal_layers.NFLinear(out_chan, in_chan, w_init='lecun')
 
     self.final = make_layer(out_channels, hidden_channels)
@@ -490,6 +495,32 @@ class ResidualOpt(lopt_base.LearnedOptimizer):
 
 
 @gin.configurable
+class ResidualOptNFNCNN(ResidualOpt):
+  """Baseline from Zhou et al, 2023."""
+  def __init__(
+      self,
+      task,
+      step_mult=0.1,
+      out_mult=1e-4,
+      ptwise_init=False,
+  ):
+    example_params = task.init(jax.random.PRNGKey(0))
+    perm_spec = make_hk_cnn_perm_spec(example_params)
+    network = HybridMLPNFN(
+        in_channels=19,
+        hidden_channels=32,
+        out_channels=1,
+        num_layers=4,
+        perm_spec=perm_spec,
+        ptwise_init=ptwise_init,
+        use_baseline=True,
+    )
+    super().__init__(
+        network, example_params, step_mult=step_mult, out_mult=out_mult
+    )
+
+
+@gin.configurable
 class ResidualOptNFN(ResidualOpt):
   """NFN learning a residual on base optimizer."""
 
@@ -520,6 +551,7 @@ class ResidualOptNFN(ResidualOpt):
           out_channels=1,
           num_layers=4,
           perm_spec=perm_spec,
+          ptwise_init=ptwise_init,
       )
     else:
       network = UnivNFNForOpt(

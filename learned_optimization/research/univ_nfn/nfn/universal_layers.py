@@ -293,6 +293,155 @@ BatchNFLinear = nn.vmap(
 batch_nf_pool = jax.vmap(nf_pool, in_axes=0, out_axes=0)
 
 
+class NFLinearCNN(nn.Module):
+  """Layer from Zhou et al 2023, for CNNs."""
+  c_out: int
+  c_in: int
+  w_init = "lecun"
+
+  @nn.compact
+  def __call__(self, params, spec):
+    # We assume the spec is of the form {"conv2_d", "conv2_d_1", ..., "linear"}
+    num_layers = len(params)
+    if self.w_init == "zeros":
+      w_scale = 0
+      b_scale = 0
+    else:
+      w_scale = math.sqrt(2 / (self.c_in * (2 * num_layers + 7)))
+      b_scale = math.sqrt(2 / (self.c_in * (2 * num_layers + 3)))
+    out = {}
+    lnames, ws, bs = [], [], []
+    allsums_w, rsums_w, csums_w, sums_b = [], [], [], []
+    w_c_ins, w_c_outs, spatial_dims = [], [], []
+    for i in range(num_layers):
+      if i == 0:
+        lname = "conv2_d"
+      elif i < num_layers - 1:
+        lname = f"conv2_d_{i}"
+      else:
+        lname = "linear"
+      lnames.append(lname)
+      # (num_in, num_out, c_in)
+      in_w = params[lname]["w"]
+      if lname.startswith("conv"):
+        # (k, k, num_in, num_out, c_in) -> (num_in, num_out, c_in * k * k)
+        w_c_ins.append(self.c_in * in_w.shape[0] * in_w.shape[1])
+        w_c_outs.append(self.c_out * in_w.shape[0] * in_w.shape[1])
+        spatial_dims.append((in_w.shape[0], in_w.shape[1]))
+        in_w = jnp.transpose(in_w, (2, 3, 4, 0, 1))
+        array_shapes = in_w.shape[:2]
+        in_w = jnp.reshape(in_w, array_shapes + (-1,))
+      else:
+        w_c_ins.append(self.c_in)
+        w_c_outs.append(self.c_out)
+        spatial_dims.append(())
+      # (bs, num_out, c_in)
+      in_b = params[lname]["b"]
+      ws.append(in_w)
+      bs.append(in_b)
+      rsum, csum = jnp.mean(in_w, axis=0), jnp.mean(in_w, axis=1)
+      rsums_w.append(rsum)
+      csums_w.append(csum)
+      allsums_w.append(jnp.mean(rsum, axis=0))
+      sums_b.append(jnp.mean(in_b, axis=0))
+
+    sums_w = jnp.concatenate(allsums_w, -1)  # (c_in * L)
+    sums_b = jnp.concatenate(sums_b, -1)  # (c_in * L)
+    sums_wb = jnp.concatenate([sums_w, sums_b], -1)  # (c_in * L * 2)
+
+    for i, (lname, w_c_in, w_c_out) in enumerate(zip(lnames, w_c_ins, w_c_outs)):
+      # Compute out_w
+      theta_w_w = self.param(
+        f"theta_w{i}_w{i}",
+        lambda rng, _shape: w_scale * jrandom.normal(rng, (w_c_in, w_c_out)),
+        (w_c_in, w_c_out))
+      out_w = jnp.einsum("jkc,cd->jkd", ws[i], theta_w_w)
+      theta_w_allwb = self.param(
+        f"theta_w{i}_allwb",
+        lambda rng, _shape: w_scale * jrandom.normal(rng, (sums_wb.shape[-1], w_c_out)),
+        (sums_wb.shape[-1], w_c_out))
+      out_w += jnp.expand_dims(sums_wb[None] @ theta_w_allwb, axis=0)
+      theta_w_wcol = self.param(
+        f"theta_w{i}_wcol",
+        lambda rng, _shape: w_scale * jrandom.normal(rng, (w_c_in, w_c_out)),
+        (w_c_in, w_c_out))
+      out_w += jnp.expand_dims(
+          jnp.einsum("jc,cd->jd", csums_w[i], theta_w_wcol), axis=1)
+      theta_w_wrow = self.param(
+        f"theta_w{i}_wrow",
+        lambda rng, _shape: w_scale * jrandom.normal(rng, (w_c_in, w_c_out)),
+        (w_c_in, w_c_out))
+      out_w += jnp.expand_dims(
+          jnp.einsum("kc,cd->kd", rsums_w[i], theta_w_wrow), axis=0)
+      theta_w_b = self.param(
+        f"theta_w{i}_b",
+        lambda rng, _shape: w_scale * jrandom.normal(rng, (self.c_in, w_c_out)),
+        (self.c_in, self.c_out))
+      out_w += jnp.expand_dims(
+          jnp.einsum("kc,cd->kd", bs[i], theta_w_b), axis=0)
+      if i > 0:
+        theta_w_wm1 = self.param(
+          f"theta_w{i}_wm1",
+          lambda rng, _shape: w_scale * jrandom.normal(rng, (w_c_ins[i-1], w_c_out)),
+          (w_c_ins[i-1], w_c_out))
+        out_w += jnp.expand_dims(
+            jnp.einsum("jc,cd->jd", rsums_w[i - 1], theta_w_wm1,), axis=1)
+        theta_w_bm1 = self.param(
+          f"theta_w{i}_bm1",
+          lambda rng, _shape: w_scale * jrandom.normal(rng, (self.c_in, w_c_out)),
+          (self.c_in, self.c_out))
+        out_w += jnp.expand_dims(
+            jnp.einsum("jc,cd->jd", bs[i - 1], theta_w_bm1), axis=1)
+      if i < num_layers - 1:
+        theta_w_wp1 = self.param(
+          f"theta_w{i}_wp1",
+          lambda rng, _shape: w_scale * jrandom.normal(rng, (w_c_ins[i+1], w_c_out)),
+          (w_c_ins[i+1], w_c_out))
+        out_w += jnp.expand_dims(
+            jnp.einsum("kc,cd->kd", csums_w[i + 1], theta_w_wp1), axis=0)
+      # Compute out_b
+      theta_bb = self.param(
+        f"theta_bb{i}",
+        lambda rng, _shape: b_scale * jrandom.normal(rng, (self.c_in, self.c_out)),
+        (self.c_in, self.c_out))
+      out_b = jnp.einsum("jc,cd->jd", bs[i], theta_bb)
+      theta_b_wcol = self.param(
+        f"theta_b{i}_wcol",
+        lambda rng, _shape: b_scale * jrandom.normal(rng, (w_c_in, self.c_out)),
+        (w_c_in, self.c_out))
+      out_b += jnp.einsum("kc,cd->kd", rsums_w[i], theta_b_wcol)
+      if i < num_layers - 1:
+        theta_b_wp1 = self.param(
+          f"theta_b{i}_wp1",
+          lambda rng, _shape: b_scale * jrandom.normal(rng, (w_c_ins[i+1], self.c_out)),
+          (w_c_ins[i+1], self.c_out))
+        out_b += jnp.einsum("kc,cd->kd", csums_w[i + 1], theta_b_wp1)
+      theta_b_allwb = self.param(
+        f"theta_b{i}_allwb",
+        lambda rng, _shape: b_scale * jrandom.normal(rng, (sums_wb.shape[-1], self.c_out)),
+        (sums_wb.shape[-1], self.c_out))
+      out_b += sums_wb[None] @ theta_b_allwb
+      if lname.startswith("conv"):
+        #  (num_in, num_out, c_in * k * k) -> (k, k, num_in, num_out, c_in)
+        kw, kh = spatial_dims[i]
+        out_w = jnp.reshape(out_w, out_w.shape[:2] + (self.c_out, kw, kh))
+        out_w = jnp.transpose(out_w, (3, 4, 0, 1, 2))
+      out[lname] = {"w": out_w, "b": out_b}
+    return out
+
+
+class PointwiseInitNFLinearCNN(nn.Module):
+  c_out: int
+  c_in: int
+
+  @nn.compact
+  def __call__(self, params, perm_spec):
+    nf_part = NFLinearCNN(self.c_out, self.c_in, w_init="zeros")(params, perm_spec)
+    ptwise_mlp = nn.Dense(self.c_out, use_bias=False)
+    ptwise_part = jtu.tree_map(ptwise_mlp, params)
+    return jtu.tree_map(lambda x, y: x + y, nf_part, ptwise_part)
+
+
 class UniversalSequential(nn.Module):
   layers: List  # pylint: disable=g-bare-generic
 
@@ -300,7 +449,7 @@ class UniversalSequential(nn.Module):
   def __call__(self, params, spec):
     out = params
     for layer in self.layers:
-      if isinstance(layer, (NFLinear, PointwiseInitNFLinear)):
+      if isinstance(layer, (NFLinear, PointwiseInitNFLinear, NFLinearCNN, PointwiseInitNFLinearCNN)):
         out = layer(out, spec)
       else:
         out = layer(out)

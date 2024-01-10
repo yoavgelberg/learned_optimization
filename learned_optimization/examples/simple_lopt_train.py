@@ -40,7 +40,7 @@ FLAGS = flags.FLAGS
 
 
 def train(train_log_dir: str,
-          outer_iterations: int = 30000,
+          outer_iterations: int = 50000,
           task: Optional[tasks_base.Task] = None):
   """Train a learned optimizer!"""
 
@@ -53,7 +53,7 @@ def train(train_log_dir: str,
   # max length of inner training unrolls
   max_length = 2_000
   # number of tasks to train in parallel
-  num_tasks = 8
+  num_tasks = 16
   # length of truncations for PES
   trunc_length = 100
 
@@ -65,11 +65,16 @@ def train(train_log_dir: str,
 
   theta_opt = opt_base.Adam(outer_learning_rate)
 
-  # lopt = learned_opts.ResidualOptNFN(
-  #   task, step_mult=1e-1, out_mult=1e-3, ptwise_init=True, hybrid=True,
-  #   conv_is_residual=True,
-  # )
-  lopt = learned_opts.ResidualOptMLP(task, step_mult=1e-1, out_mult=1e-3)
+  if FLAGS.lopt == "mlp":
+    lopt = learned_opts.ResidualOptMLP(task, step_mult=1e-1, out_mult=1e-3)
+  elif FLAGS.lopt == "nfn":
+    lopt = learned_opts.ResidualOptNFN(
+      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, hybrid=True,
+    )
+  elif FLAGS.lopt == "nfn_baseline":
+    lopt = learned_opts.ResidualOptNFNCNN(
+      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise
+    )
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)
@@ -137,6 +142,9 @@ def main(unused_argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
+  flags.DEFINE_string("lopt", None, "")
   flags.DEFINE_string("train_log_dir", None, "")
+  flags.DEFINE_boolean("pointwise", False, "")
+  flags.mark_flag_as_required("lopt")
   flags.mark_flag_as_required("train_log_dir")
   app.run(main)
