@@ -65,6 +65,7 @@ def train(train_log_dir: str,
 
   theta_opt = opt_base.Adam(outer_learning_rate)
 
+  print(FLAGS.lopt)
   if FLAGS.lopt == "mlp":
     lopt = learned_opts.ResidualOptMLP(task, step_mult=1e-1, out_mult=1e-3)
   elif FLAGS.lopt == "nfn":
