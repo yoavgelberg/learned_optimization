@@ -268,6 +268,31 @@ class UnivNFNForOpt(nn.Module):
     return self.mod(inp_features, self.perm_spec.unfreeze())
 
 
+class HetNFNForOpt(nn.Module):
+  """Universal NFN for learned opt."""
+
+  in_channels: int
+  hidden_channels: int
+  out_channels: int
+  num_layers: int
+  perm_spec: Any
+
+  def setup(self):
+    in_channels, hidden_channels = self.in_channels, self.hidden_channels
+
+    layers = [universal_layers.HetNFLayer(hidden_channels, in_channels, hidden_channels)]
+    for _ in range(self.num_layers - 2):
+      layers.append(universal_layers.HetNFLayer(hidden_channels, hidden_channels, hidden_channels))
+    layers.append(universal_layers.HetNFLayer(self.out_channels, hidden_channels, hidden_channels))
+    self.mod = universal_layers.UniversalSequential(layers)
+
+  def __call__(self, inp_features):
+    inp_features = data_structures.to_mutable_dict(inp_features)
+    # perm_spec is automatically made a flax.core.FrozenDict, we undo that.
+    out = self.mod(inp_features, self.perm_spec.unfreeze())
+    return data_structures.to_immutable_dict(out)
+
+
 class HybridMLPNFN(nn.Module):
   """MLP + NFN Lopt."""
 
@@ -531,7 +556,7 @@ class ResidualOptNFN(ResidualOpt):
       out_mult=1e-4,
       ptwise_init=False,
       pos_emb=False,
-      hybrid=False,
+      nfn_type="default",
       conv_is_residual=False,
   ):
     example_params = task.init(jax.random.PRNGKey(0))
@@ -543,7 +568,7 @@ class ResidualOptNFN(ResidualOpt):
       perm_spec = make_hk_transformer_perm_spec(example_params)
     else:
       perm_spec = make_hk_perm_spec(example_params)
-    if hybrid:
+    if nfn_type == "hybrid":
       assert not pos_emb
       network = HybridMLPNFN(
           in_channels=19,
@@ -553,7 +578,7 @@ class ResidualOptNFN(ResidualOpt):
           perm_spec=perm_spec,
           ptwise_init=ptwise_init,
       )
-    else:
+    elif nfn_type == "default":
       network = UnivNFNForOpt(
           in_channels=19,
           hidden_channels=32,
@@ -563,6 +588,20 @@ class ResidualOptNFN(ResidualOpt):
           ptwise_init=ptwise_init,
           pos_emb=pos_emb,
       )
+    elif nfn_type == "het":
+      assert not pos_emb
+      assert not ptwise_init
+      network = HetNFNForOpt(
+          in_channels=19,
+          hidden_channels=32,
+          out_channels=1,
+          num_layers=2,
+          perm_spec=perm_spec,
+      )
+    else:
+      raise NotImplementedError
+    print(network)
+
     super().__init__(
         network, example_params, step_mult=step_mult, out_mult=out_mult
     )

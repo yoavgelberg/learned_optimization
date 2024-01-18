@@ -33,6 +33,7 @@ from learned_optimization.outer_trainers import truncation_schedule
 from learned_optimization.tasks import base as tasks_base
 from learned_optimization.tasks.fixed import image_mlp
 from learned_optimization.tasks.fixed import conv
+from learned_optimization.tasks.fixed import rnn_lm
 import numpy as np
 import tqdm
 
@@ -45,7 +46,14 @@ def train(train_log_dir: str,
   """Train a learned optimizer!"""
 
   if not task:
-    task = conv.Conv_Cifar10_8_16x32()
+    if FLAGS.task == "cnn":
+      task = conv.Conv_Cifar10_8_16x32()
+    elif FLAGS.task == "mlp":
+      task = image_mlp.ImageMLP_FashionMnist8_Relu32()
+    elif FLAGS.task == "rnn":
+      import pdb; pdb.set_trace()
+    else:
+      raise ValueError(f"Unknown task {FLAGS.task}.")
 
   #### Hparams
   # learning rate used to train the learned optimizer
@@ -70,12 +78,18 @@ def train(train_log_dir: str,
     lopt = learned_opts.ResidualOptMLP(task, step_mult=1e-1, out_mult=1e-3)
   elif FLAGS.lopt == "nfn":
     lopt = learned_opts.ResidualOptNFN(
-      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, hybrid=True,
+      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="hybrid",
+    )
+  elif FLAGS.lopt == "nfn_het":
+    lopt = learned_opts.ResidualOptNFN(
+      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="het",
     )
   elif FLAGS.lopt == "nfn_baseline":
     lopt = learned_opts.ResidualOptNFNCNN(
-      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise
+      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
     )
+  elif FLAGS.lopt == "sgdm":
+    lopt = lopt_base.LearnableSGDM()
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)
@@ -144,8 +158,10 @@ def main(unused_argv: Sequence[str]) -> None:
 
 if __name__ == "__main__":
   flags.DEFINE_string("lopt", None, "")
+  flags.DEFINE_string("task", None, "")
   flags.DEFINE_string("train_log_dir", None, "")
   flags.DEFINE_boolean("pointwise", False, "")
   flags.mark_flag_as_required("lopt")
+  flags.mark_flag_as_required("task")
   flags.mark_flag_as_required("train_log_dir")
   app.run(main)

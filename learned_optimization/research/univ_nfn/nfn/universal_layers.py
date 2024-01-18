@@ -245,6 +245,7 @@ class NFLinear(nn.Module):
 
 
 class PointwiseInitNFLinear(nn.Module):
+  """NFLinear initialized to zeros + a linear layer applied pointwise."""
   c_out: int
   c_in: int
 
@@ -254,6 +255,55 @@ class PointwiseInitNFLinear(nn.Module):
     ptwise_mlp = nn.Dense(self.c_out, use_bias=False)
     ptwise_part = jtu.tree_map(ptwise_mlp, params)
     return jtu.tree_map(lambda x, y: x + y, nf_part, ptwise_part)
+
+
+class NFPool(nn.Module):
+  """Universal neural functional pooling op, *without* any parameters."""
+  c_out: int
+  c_in: int
+
+  @nn.compact
+  def __call__(self, params, perm_spec):
+    params_and_spec, tree_def = jtu.tree_flatten(
+        jtu.tree_map(LeafTuple, params, perm_spec)
+    )
+    flat_params = [x[0] for x in params_and_spec]
+    flat_spec = [x[1] for x in params_and_spec]
+    L = len(flat_params)
+
+    outs = []
+    for i in range(L):  # output
+      terms_i = []
+      for j in range(L):  # input
+        in_param, out_param = flat_params[j], flat_params[i]
+        out_spec, in_spec = flat_spec[i], flat_spec[j]
+        term_gen_fn = jax.vmap(
+            functools.partial(gen_terms, out_spec, in_spec, out_param.shape),
+            in_axes=-1,
+            out_axes=-1,
+        )
+        terms_i.extend(term_gen_fn(in_param))
+      out = 0
+      for term in terms_i:  # mean pooling
+        out += term / len(terms_i)
+      bias_i = self.param(
+          f"bias_{i}", nn.initializers.zeros_init(), (self.c_out,)
+      )
+      out += bias_i
+      outs.append(out)
+    return jtu.tree_unflatten(tree_def, outs)
+
+
+class HetNFLayer(nn.Module):
+  c_out: int
+  c_in: int
+  c_hidden: int
+
+  @nn.compact
+  def __call__(self, params, perm_spec):
+    mlp = nn.Sequential([nn.Dense(self.c_hidden), nn.relu, nn.Dense(self.c_out)])
+    params = jtu.tree_map(mlp, params)
+    return NFPool(self.c_out, self.c_in)(params, perm_spec)
 
 
 class NFDropout(nn.Module):
@@ -449,7 +499,7 @@ class UniversalSequential(nn.Module):
   def __call__(self, params, spec):
     out = params
     for layer in self.layers:
-      if isinstance(layer, (NFLinear, PointwiseInitNFLinear, NFLinearCNN, PointwiseInitNFLinearCNN)):
+      if isinstance(layer, (NFLinear, PointwiseInitNFLinear, NFLinearCNN, PointwiseInitNFLinearCNN, NFPool, HetNFLayer)):
         out = layer(out, spec)
       else:
         out = layer(out)
