@@ -75,16 +75,21 @@ def train(train_log_dir: str,
 
   print(FLAGS.lopt)
   if FLAGS.lopt == "mlp":
-    lopt = learned_opts.ResidualOptMLP(task, step_mult=1e-1, out_mult=1e-3)
+    lopt = learned_opts.ResidualOptMLP(
+      task, step_mult=1e-1, out_mult=1e-3, learnable_hp=FLAGS.learnable_hp
+    )
   elif FLAGS.lopt == "nfn":
     lopt = learned_opts.ResidualOptNFN(
-      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="hybrid",
+      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
+      nfn_type="hybrid", learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn_het":
     lopt = learned_opts.ResidualOptNFN(
       task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="het",
+      learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn_baseline":
+    assert not FLAGS.learnable_hp
     lopt = learned_opts.ResidualOptNFNCNN(
       task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
     )
@@ -161,6 +166,7 @@ if __name__ == "__main__":
   flags.DEFINE_string("task", None, "")
   flags.DEFINE_string("train_log_dir", None, "")
   flags.DEFINE_boolean("pointwise", False, "")
+  flags.DEFINE_boolean("learnable_hp", False, "")
   flags.mark_flag_as_required("lopt")
   flags.mark_flag_as_required("task")
   flags.mark_flag_as_required("train_log_dir")

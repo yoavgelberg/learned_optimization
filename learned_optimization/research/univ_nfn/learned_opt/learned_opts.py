@@ -87,6 +87,7 @@ class SimpleOptState(flax.struct.PyTreeNode):
   rolling_features: common.MomAccumulator
   iteration: jnp.ndarray
   state: Any
+  momentum: common.MomAccumulator
 
 
 def make_hk_perm_spec(mlp_params):
@@ -420,22 +421,34 @@ class SGDControl(lopt_base.LearnedOptimizer):
 class ResidualOpt(lopt_base.LearnedOptimizer):
   """NFN learning a modified version of SGD+momentum."""
 
-  def __init__(self, network, example_params, out_mult=1e-4, step_mult=0.1):
+  def __init__(self, network, example_params, out_mult=1e-4, step_mult=0.1, learnable_hp=False):
     self._network = network
     self._example_params = example_params
     self._out_mult = out_mult
     self._step_mult = step_mult
+    self._learnable_hp = learnable_hp
+    print(f"Learnable hp: {self._learnable_hp}.")
 
   def init(self, key: KeyArray) -> MetaParams:
     fixed_params = jtu.tree_map(
         lambda x: jnp.repeat(x[..., None], 19, -1), self._example_params
     )
-    return self._network.init(key, fixed_params)
+    return {
+      "mod_params": self._network.init(key, fixed_params),
+      "step_mult": jnp.log(jnp.asarray(self._step_mult)),
+      "out_mult": jnp.log(jnp.asarray(self._out_mult)),
+      "one_minus_momentum": lopt_base.one_minus_log.forward(0.9),
+    }
 
   def opt_fn(self, theta, is_training=False) -> opt_base.Optimizer:
     decays = jnp.asarray([0.1, 0.5, 0.9, 0.99, 0.999, 0.9999])
     network_fn = self._network.apply
-    step_mult, out_mult = self._step_mult, self._out_mult
+    if self._learnable_hp:
+      step_mult, out_mult = jnp.exp(theta["step_mult"]), jnp.exp(theta["out_mult"])
+      mom_decay = lopt_base.one_minus_log.inverse(theta["one_minus_momentum"])
+    else:
+      step_mult, out_mult = self._step_mult, self._out_mult
+      mom_decay = 0.9
 
     class _Opt(opt_base.Optimizer):
       """Optimizer instance which has captured the meta-params (theta)."""
@@ -454,6 +467,7 @@ class ResidualOpt(lopt_base.LearnedOptimizer):
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
             iteration=jnp.asarray(0, dtype=jnp.int32),
+            momentum=common.rolling_mom(mom_decay).init(params),
         )
 
       def update(
@@ -494,16 +508,16 @@ class ResidualOpt(lopt_base.LearnedOptimizer):
             functools.partial(cat_tstep_feature, training_step_feature),
             inp_features,
         )
-        out = nfu.tree_squeeze(network_fn(theta, inp_features), -1)
+        out = nfu.tree_squeeze(network_fn(theta["mod_params"], inp_features), -1)
         summary.summary('nfn_lopt/out_magn', nfu.tree_mean_magn(out))
         # Taking channel of momentum corresponding to decay=0.9
-        momentum = jtu.tree_map(lambda m: m[..., 2], next_rolling_features.m)
+        momentum = common.rolling_mom(mom_decay).update(opt_state.momentum, grad)
         summary.summary('nfn_lopt/momentum_magn', nfu.tree_mean_magn(momentum))
         next_params = jtu.tree_map(
             lambda p, o, m: p - step_mult * (out_mult * o + m),
             opt_state.params,
             out,
-            momentum,
+            momentum.m,
         )
         summary.summary('nfn_lopt/mean_abs_mom', nfu.tree_mean_magn(momentum))
         next_opt_state = SimpleOptState(
@@ -513,6 +527,7 @@ class ResidualOpt(lopt_base.LearnedOptimizer):
             ),
             iteration=opt_state.iteration + 1,
             state=model_state,
+            momentum=tree_utils.match_type(momentum, opt_state.momentum),
         )
         return next_opt_state
 
@@ -558,6 +573,7 @@ class ResidualOptNFN(ResidualOpt):
       pos_emb=False,
       nfn_type="default",
       conv_is_residual=False,
+      learnable_hp=False,
   ):
     example_params = task.init(jax.random.PRNGKey(0))
     if 'conv2_d' in example_params:
@@ -603,20 +619,20 @@ class ResidualOptNFN(ResidualOpt):
     print(network)
 
     super().__init__(
-        network, example_params, step_mult=step_mult, out_mult=out_mult
+        network, example_params, step_mult=step_mult, out_mult=out_mult, learnable_hp=learnable_hp,
     )
 
 
 @gin.configurable
 class ResidualOptMLP(ResidualOpt):
 
-  def __init__(self, task, step_mult=0.1, out_mult=1e-4, pos_emb=False):
+  def __init__(self, task, step_mult=0.1, out_mult=1e-4, pos_emb=False, learnable_hp=False):
     example_params = task.init(jax.random.PRNGKey(0))
     network = MLPForOpt(
         hidden_channels=32, out_channels=1, num_layers=4, pos_emb=pos_emb
     )
     super().__init__(
-        network, example_params, step_mult=step_mult, out_mult=out_mult
+        network, example_params, step_mult=step_mult, out_mult=out_mult, learnable_hp=learnable_hp
     )
 
 
