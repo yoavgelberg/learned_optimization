@@ -51,7 +51,9 @@ def train(train_log_dir: str,
     elif FLAGS.task == "mlp":
       task = image_mlp.ImageMLP_FashionMnist8_Relu32()
     elif FLAGS.task == "rnn":
-      import pdb; pdb.set_trace()
+      # task = rnn_lm.RNNLM_lm1bbytes_Patch32_IRNN128_Embed64()
+      task = rnn_lm.RNNLM_lm1bbytes_Patch16_IRNN64_Embed32()
+      # task = rnn_lm.RNNLM_lm1bbytes_Patch32_VanillaRNN128_Embed64()
     else:
       raise ValueError(f"Unknown task {FLAGS.task}.")
 
@@ -73,19 +75,20 @@ def train(train_log_dir: str,
 
   theta_opt = opt_base.Adam(outer_learning_rate)
 
+  step_mult = FLAGS.step_mult
   print(FLAGS.lopt)
   if FLAGS.lopt == "mlp":
     lopt = learned_opts.ResidualOptMLP(
-      task, step_mult=1e-1, out_mult=1e-3, learnable_hp=FLAGS.learnable_hp
+      task, step_mult=step_mult, out_mult=1e-3, learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn":
     lopt = learned_opts.ResidualOptNFN(
-      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
+      task, step_mult=step_mult, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
       nfn_type="hybrid", learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn_het":
     lopt = learned_opts.ResidualOptNFN(
-      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="het",
+      task, step_mult=step_mult, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="het",
       learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn_baseline":
@@ -165,6 +168,7 @@ if __name__ == "__main__":
   flags.DEFINE_string("lopt", None, "")
   flags.DEFINE_string("task", None, "")
   flags.DEFINE_string("train_log_dir", None, "")
+  flags.DEFINE_float("step_mult", 0.1, "")
   flags.DEFINE_boolean("pointwise", False, "")
   flags.DEFINE_boolean("learnable_hp", False, "")
   flags.mark_flag_as_required("lopt")

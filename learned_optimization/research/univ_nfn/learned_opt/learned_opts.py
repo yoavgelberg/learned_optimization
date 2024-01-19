@@ -323,10 +323,11 @@ class HybridMLPNFN(nn.Module):
     self.final = make_layer(out_channels, hidden_channels)
 
   def __call__(self, inp_features):
-    inp_features = data_structures.to_mutable_dict(inp_features)
+    # inp_features = data_structures.to_mutable_dict(inp_features)
     features = universal_layers.nf_relu(self.mlp(inp_features))
     features = self.final(features, self.perm_spec.unfreeze())
-    return data_structures.to_immutable_dict(features)
+    # return data_structures.to_immutable_dict(features)
+    return features
 
 
 class SGDControl(lopt_base.LearnedOptimizer):

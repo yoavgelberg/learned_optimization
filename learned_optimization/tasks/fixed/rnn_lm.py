@@ -112,6 +112,7 @@ def _delay(klass, *args):
 
 # pyformat: disable
 cfgs = [
+    (_delay_fn(language.lm1b_bytes_datasets, 64, 16), None, _delay_fn(rnn.IRNN, 64), 32),
     (_delay_fn(language.lm1b_bytes_datasets, 128, 32), None, _delay_fn(rnn.IRNN, 128), 64),
     (_delay_fn(language.lm1b_bytes_datasets, 128, 32), None, _delay_fn(hk.LSTM, 128), 64),
     (_delay_fn(language.lm1b_bytes_datasets, 128, 32), None, _delay_fn(hk.GRU, 128), 64),
