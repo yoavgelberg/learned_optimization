@@ -511,7 +511,6 @@ class ResidualOpt(lopt_base.LearnedOptimizer):
         )
         out = nfu.tree_squeeze(network_fn(theta["mod_params"], inp_features), -1)
         summary.summary('nfn_lopt/out_magn', nfu.tree_mean_magn(out))
-        # Taking channel of momentum corresponding to decay=0.9
         momentum = common.rolling_mom(mom_decay).update(opt_state.momentum, grad)
         summary.summary('nfn_lopt/momentum_magn', nfu.tree_mean_magn(momentum))
         next_params = jtu.tree_map(

@@ -76,28 +76,29 @@ def train(train_log_dir: str,
   theta_opt = opt_base.Adam(outer_learning_rate)
 
   step_mult = FLAGS.step_mult
+  out_mult = FLAGS.out_mult
   print(FLAGS.lopt)
   if FLAGS.lopt == "mlp":
     lopt = learned_opts.ResidualOptMLP(
-      task, step_mult=step_mult, out_mult=1e-3, learnable_hp=FLAGS.learnable_hp
+      task, step_mult=step_mult, out_mult=out_mult, learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn":
     lopt = learned_opts.ResidualOptNFN(
-      task, step_mult=step_mult, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
+      task, step_mult=step_mult, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
       nfn_type="hybrid", learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn_het":
     lopt = learned_opts.ResidualOptNFN(
-      task, step_mult=step_mult, out_mult=1e-3, ptwise_init=FLAGS.pointwise, nfn_type="het",
+      task, step_mult=step_mult, out_mult=out_mult, ptwise_init=FLAGS.pointwise, nfn_type="het",
       learnable_hp=FLAGS.learnable_hp
     )
   elif FLAGS.lopt == "nfn_baseline":
     assert not FLAGS.learnable_hp
     lopt = learned_opts.ResidualOptNFNCNN(
-      task, step_mult=1e-1, out_mult=1e-3, ptwise_init=FLAGS.pointwise,
+      task, step_mult=1e-1, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
     )
   elif FLAGS.lopt == "sgdm":
-    lopt = lopt_base.LearnableSGDM()
+    lopt = lopt_base.LearnableSGDM(initial_lr=step_mult)
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)
@@ -169,6 +170,7 @@ if __name__ == "__main__":
   flags.DEFINE_string("task", None, "")
   flags.DEFINE_string("train_log_dir", None, "")
   flags.DEFINE_float("step_mult", 0.1, "")
+  flags.DEFINE_float("out_mult", 1e-3, "")
   flags.DEFINE_boolean("pointwise", False, "")
   flags.DEFINE_boolean("learnable_hp", False, "")
   flags.mark_flag_as_required("lopt")
