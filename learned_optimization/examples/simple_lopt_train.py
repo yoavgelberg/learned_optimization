@@ -100,7 +100,8 @@ def train(train_log_dir: str,
       task, step_mult=1e-1, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
     )
   elif FLAGS.lopt == "sgdm":
-    lopt = lopt_base.LearnableSGDM(initial_lr=step_mult)
+    # Optax uses trace instead of EMA, so for momentum=0.9 the LR should be divided by 10.
+    lopt = lopt_base.LearnableSGDM(initial_lr=step_mult / 10)
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)
@@ -128,8 +129,6 @@ def train(train_log_dir: str,
 
   eval_key = jax.random.PRNGKey(int(np.random.randint(0, int(2**30))))
   theta0 = outer_trainer.get_meta_params(outer_trainer_state)
-  with open(os.path.join(train_log_dir, "theta0.pkl"), 'wb') as f:
-    pickle.dump(theta0, f)
   print("Theta param count", sum([x.size for x in jax.tree_util.tree_leaves(theta0)]))
   init_opt = lopt.opt_fn(theta0)
   initial_results = eval_training.single_task_training_curves(
@@ -139,6 +138,10 @@ def train(train_log_dir: str,
 
   losses = []
   for i in tqdm.trange(outer_iterations):
+    if i % 10_000 == 0:
+      theta_i = outer_trainer.get_meta_params(outer_trainer_state)
+      with open(os.path.join(train_log_dir, f"theta{i}.pkl"), 'wb') as f:
+        pickle.dump(theta_i, f)
     with_m = True if i % 10 == 0 else False
     key1, key = jax.random.split(key)
     outer_trainer_state, loss, metrics = outer_trainer.update(

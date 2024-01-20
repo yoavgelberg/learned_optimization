@@ -279,19 +279,24 @@ class HetNFNForOpt(nn.Module):
   perm_spec: Any
 
   def setup(self):
-    in_channels, hidden_channels = self.in_channels, self.hidden_channels
+    hidden_channels = self.hidden_channels
 
-    layers = [universal_layers.HetNFLayer(hidden_channels, in_channels, hidden_channels)]
-    for _ in range(self.num_layers - 2):
-      layers.append(universal_layers.HetNFLayer(hidden_channels, hidden_channels, hidden_channels))
-    layers.append(universal_layers.HetNFLayer(self.out_channels, hidden_channels, hidden_channels))
+    PoolingOp = universal_layers.NFPool()
+    layers = [universal_layers.PointwiseDense(hidden_channels)]
+    assert (self.num_layers - 2) % 2 == 0
+    for _ in range((self.num_layers - 2) // 2):
+      layers.append(PoolingOp)
+      layers.append(universal_layers.PointwiseDense(hidden_channels))
+      layers.append(universal_layers.nf_relu)
+      layers.append(universal_layers.PointwiseDense(hidden_channels))
+    layers.append(PoolingOp)
+    layers.append(universal_layers.PointwiseDense(self.out_channels))
+    print("Layers:", layers)
     self.mod = universal_layers.UniversalSequential(layers)
 
   def __call__(self, inp_features):
-    inp_features = data_structures.to_mutable_dict(inp_features)
     # perm_spec is automatically made a flax.core.FrozenDict, we undo that.
-    out = self.mod(inp_features, self.perm_spec.unfreeze())
-    return data_structures.to_immutable_dict(out)
+    return self.mod(inp_features, self.perm_spec.unfreeze())
 
 
 class HybridMLPNFN(nn.Module):
@@ -323,11 +328,8 @@ class HybridMLPNFN(nn.Module):
     self.final = make_layer(out_channels, hidden_channels)
 
   def __call__(self, inp_features):
-    # inp_features = data_structures.to_mutable_dict(inp_features)
     features = universal_layers.nf_relu(self.mlp(inp_features))
-    features = self.final(features, self.perm_spec.unfreeze())
-    # return data_structures.to_immutable_dict(features)
-    return features
+    return self.final(features, self.perm_spec.unfreeze())
 
 
 class SGDControl(lopt_base.LearnedOptimizer):
@@ -611,7 +613,7 @@ class ResidualOptNFN(ResidualOpt):
           in_channels=19,
           hidden_channels=32,
           out_channels=1,
-          num_layers=2,
+          num_layers=4,
           perm_spec=perm_spec,
       )
     else:

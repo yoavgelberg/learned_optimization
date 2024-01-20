@@ -259,9 +259,6 @@ class PointwiseInitNFLinear(nn.Module):
 
 class NFPool(nn.Module):
   """Universal neural functional pooling op, *without* any parameters."""
-  c_out: int
-  c_in: int
-
   @nn.compact
   def __call__(self, params, perm_spec):
     params_and_spec, tree_def = jtu.tree_flatten(
@@ -286,24 +283,15 @@ class NFPool(nn.Module):
       out = 0
       for term in terms_i:  # mean pooling
         out += term / len(terms_i)
-      bias_i = self.param(
-          f"bias_{i}", nn.initializers.zeros_init(), (self.c_out,)
-      )
-      out += bias_i
       outs.append(out)
     return jtu.tree_unflatten(tree_def, outs)
 
 
-class HetNFLayer(nn.Module):
+class PointwiseDense(nn.Module):
   c_out: int
-  c_in: int
-  c_hidden: int
-
   @nn.compact
   def __call__(self, params, perm_spec):
-    mlp = nn.Sequential([nn.Dense(self.c_hidden), nn.relu, nn.Dense(self.c_out)])
-    params = jtu.tree_map(mlp, params)
-    return NFPool(self.c_out, self.c_in)(params, perm_spec)
+    return jtu.tree_map(nn.Dense(self.c_out), params)
 
 
 class NFDropout(nn.Module):
@@ -499,7 +487,7 @@ class UniversalSequential(nn.Module):
   def __call__(self, params, spec):
     out = params
     for layer in self.layers:
-      if isinstance(layer, (NFLinear, PointwiseInitNFLinear, NFLinearCNN, PointwiseInitNFLinearCNN, NFPool, HetNFLayer)):
+      if isinstance(layer, (NFLinear, PointwiseInitNFLinear, NFLinearCNN, PointwiseInitNFLinearCNN, NFPool, PointwiseDense)):
         out = layer(out, spec)
       else:
         out = layer(out)
