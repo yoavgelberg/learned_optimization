@@ -258,7 +258,7 @@ class UnivNFNForOpt(nn.Module):
     if self.pos_emb:
       layers.append(PosEmbConv())
     layers.append(universal_layers.nf_relu)
-    for _ in range(self.num_layers - 1):
+    for _ in range(self.num_layers - 2):
       layers.append(make_layer(hidden_channels, hidden_channels))
       layers.append(universal_layers.nf_relu)
     layers.append(make_layer(self.out_channels, hidden_channels))

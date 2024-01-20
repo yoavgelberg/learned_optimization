@@ -16,8 +16,10 @@
 """Simple learned optimizer training example using gradient estimator APIs."""
 from typing import Optional, Sequence
 
+import os
 from absl import app
 from absl import flags
+import pickle
 import jax
 from learned_optimization import filesystem
 from learned_optimization import summary
@@ -126,6 +128,8 @@ def train(train_log_dir: str,
 
   eval_key = jax.random.PRNGKey(int(np.random.randint(0, int(2**30))))
   theta0 = outer_trainer.get_meta_params(outer_trainer_state)
+  with open(os.path.join(train_log_dir, "theta0.pkl"), 'wb') as f:
+    pickle.dump(theta0, f)
   print("Theta param count", sum([x.size for x in jax.tree_util.tree_leaves(theta0)]))
   init_opt = lopt.opt_fn(theta0)
   initial_results = eval_training.single_task_training_curves(
@@ -154,6 +158,8 @@ def train(train_log_dir: str,
       summary_writer.flush()
 
   thetaT = outer_trainer.get_meta_params(outer_trainer_state)
+  with open(os.path.join(train_log_dir, "thetaT.pkl"), 'wb') as f:
+    pickle.dump(thetaT, f)
   final_opt = lopt.opt_fn(thetaT)
   final_results = eval_training.single_task_training_curves(
       task, final_opt, max_length, eval_key)
