@@ -282,13 +282,10 @@ class HetNFNForOpt(nn.Module):
     hidden_channels = self.hidden_channels
 
     PoolingOp = universal_layers.NFPool()
-    layers = [universal_layers.PointwiseDense(hidden_channels)]
-    assert (self.num_layers - 2) % 2 == 0
-    for _ in range((self.num_layers - 2) // 2):
-      layers.append(PoolingOp)
+    layers = []
+    for _ in range(self.num_layers - 1):
       layers.append(universal_layers.PointwiseDense(hidden_channels))
       layers.append(universal_layers.nf_relu)
-      layers.append(universal_layers.PointwiseDense(hidden_channels))
     layers.append(PoolingOp)
     layers.append(universal_layers.PointwiseDense(self.out_channels))
     print("Layers:", layers)

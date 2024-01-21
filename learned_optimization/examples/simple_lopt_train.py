@@ -97,7 +97,7 @@ def train(train_log_dir: str,
   elif FLAGS.lopt == "nfn_baseline":
     assert not FLAGS.learnable_hp
     lopt = learned_opts.ResidualOptNFNCNN(
-      task, step_mult=1e-1, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
+      task, step_mult=step_mult, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
     )
   elif FLAGS.lopt == "sgdm":
     # Optax uses trace instead of EMA, so for momentum=0.9 the LR should be divided by 10.
