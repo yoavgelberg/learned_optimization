@@ -542,6 +542,7 @@ class ResidualOptNFNCNN(ResidualOpt):
       step_mult=0.1,
       out_mult=1e-4,
       ptwise_init=False,
+      learnable_hp=False,
   ):
     example_params = task.init(jax.random.PRNGKey(0))
     perm_spec = make_hk_cnn_perm_spec(example_params)
@@ -555,7 +556,7 @@ class ResidualOptNFNCNN(ResidualOpt):
         use_baseline=True,
     )
     super().__init__(
-        network, example_params, step_mult=step_mult, out_mult=out_mult
+        network, example_params, step_mult=step_mult, out_mult=out_mult, learnable_hp=learnable_hp,
     )
 
 
