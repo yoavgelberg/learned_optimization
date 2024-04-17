@@ -49,13 +49,12 @@ def evaluate(ckpt_path: str, out_path, task: Optional[tasks_base.Task] = None):
   elif FLAGS.lopt == "nfn_het":
     lopt = learned_opts.ResidualOptNFN(task, ptwise_init=FLAGS.pointwise, nfn_type="het", learnable_hp=FLAGS.learnable_hp)
   elif FLAGS.lopt == "nfn_baseline":
-    assert not FLAGS.learnable_hp
-    lopt = learned_opts.ResidualOptNFNCNN(task, ptwise_init=FLAGS.pointwise)
+    lopt = learned_opts.ResidualOptNFNCNN(task, ptwise_init=FLAGS.pointwise, learnable_hp=FLAGS.learnable_hp)
   elif FLAGS.lopt == "sgdm":
     # Optax uses trace instead of EMA, so for momentum=0.9 the LR should be divided by 10.
     lopt = lopt_base.LearnableSGDM()
 
-  max_length = 2_000
+  max_length = 4_000
   with open(ckpt_path, 'rb') as f:
     theta = pickle.load(f)
   print("Theta param count", sum([x.size for x in jax.tree_util.tree_leaves(theta)]))

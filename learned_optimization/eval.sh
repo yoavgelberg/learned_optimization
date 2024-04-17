@@ -16,6 +16,6 @@ function TPU3() {
 }
 
 
-TPU0 python -m examples.simple_lopt_train --task mlp --lopt nfn --learnable_hp True --train_log_dir ~/lopt_mlp_logs/mlp_nfn_learnable_rep0 &
-TPU1 python -m examples.simple_lopt_train --task mlp --lopt mlp --learnable_hp True --train_log_dir ~/lopt_mlp_logs/mlp_mlp_learnable_rep0 &
-TPU2 python -m examples.simple_lopt_train --task mlp --lopt sgdm --train_log_dir ~/lopt_mlp_logs/mlp_sgdm_rep0
+TPU0 python -m examples.eval_inner --num_evals 5 --task mlp --out_path /tmp/mlp_eval/nfn --lopt nfn --learnable_hp True --ckpt_path ~/lopt_mlp_logs/mlp_nfn_learnable_rep0/thetaT.pkl &
+TPU2 python -m examples.eval_inner --num_evals 5 --task mlp --out_path /tmp/mlp_eval/mlp --lopt mlp --learnable_hp True --ckpt_path ~/lopt_mlp_logs/mlp_mlp_learnable_rep0/thetaT.pkl &
+TPU3 python -m examples.eval_inner --num_evals 5 --task mlp --out_path /tmp/mlp_eval/sgdm --lopt sgdm --ckpt_path ~/lopt_mlp_logs/mlp_sgdm_rep0/thetaT.pkl

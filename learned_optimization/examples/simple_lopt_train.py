@@ -36,6 +36,7 @@ from learned_optimization.tasks import base as tasks_base
 from learned_optimization.tasks.fixed import image_mlp
 from learned_optimization.tasks.fixed import conv
 from learned_optimization.tasks.fixed import rnn_lm
+from learned_optimization.tasks.fixed import transformer_lm
 import numpy as np
 import tqdm
 
@@ -56,6 +57,8 @@ def train(train_log_dir: str,
       # task = rnn_lm.RNNLM_lm1bbytes_Patch32_IRNN128_Embed64()
       task = rnn_lm.RNNLM_lm1bbytes_Patch16_IRNN64_Embed32()
       # task = rnn_lm.RNNLM_lm1bbytes_Patch32_VanillaRNN128_Embed64()
+    elif FLAGS.task == "transformer":
+      task = transformer_lm.TransformerLM_LM1B_MultiRuntime_2()
     else:
       raise ValueError(f"Unknown task {FLAGS.task}.")
 
