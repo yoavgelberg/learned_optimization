@@ -26,6 +26,7 @@ from learned_optimization import summary
 from learned_optimization import eval_training
 from learned_optimization.learned_optimizers import base as lopt_base  # pylint: disable=unused-import
 from learned_optimization.learned_optimizers import mlp_lopt
+from learned_optimization.learned_optimizers import adafac_nominal
 from learned_optimization.research.univ_nfn.learned_opt import learned_opts
 from learned_optimization.optimizers import base as opt_base
 from learned_optimization.outer_trainers import gradient_learner
@@ -105,6 +106,29 @@ def train(train_log_dir: str,
   elif FLAGS.lopt == "sgdm":
     # Optax uses trace instead of EMA, so for momentum=0.9 the LR should be divided by 10.
     lopt = lopt_base.LearnableSGDM(initial_lr=step_mult / 10)
+  elif FLAGS.lopt == "adam":
+    lopt = adafac_nominal.MLPNomLOpt(
+      task,
+      nominal_grad_estimator="Adam",
+      nominal_stepsize=FLAGS.step_mult,
+      step_mult=FLAGS.out_mult)
+  elif FLAGS.lopt == "mlp_adam":
+    lopt = adafac_nominal.MLPNomLOpt(
+      task,
+      nominal_grad_estimator="Adam",
+      # Matching the other LOpt convention of step_mult * (nominal + out_mult * f( ))
+      nominal_stepsize=FLAGS.step_mult,
+      step_mult=FLAGS.step_mult * FLAGS.out_mult,
+      method="mlp")
+  elif FLAGS.lopt == "nfn_adam":
+    assert FLAGS.pointwise, "Only pointwise is supported."
+    lopt = adafac_nominal.MLPNomLOpt(
+      task,
+      nominal_grad_estimator="Adam",
+      # Matching the other LOpt convention of step_mult * (nominal + out_mult * f( ))
+      nominal_stepsize=FLAGS.step_mult,
+      step_mult=FLAGS.step_mult * FLAGS.out_mult,
+      method="nfn")
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)

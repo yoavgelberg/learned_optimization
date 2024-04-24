@@ -28,6 +28,7 @@ from learned_optimization import tree_utils
 from learned_optimization.learned_optimizers import base as lopt_base
 from learned_optimization.learned_optimizers import common
 from learned_optimization.optimizers import base as opt_base
+from learned_optimization.research.univ_nfn.learned_opt import learned_opts as nfn_lopts
 import numpy as onp
 
 PRNGKey = jnp.ndarray
@@ -73,18 +74,14 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
   """MLP based learned optimizer with adafactor style accumulators."""
 
   def __init__(self,
+               task,
                exp_mult=(0.001, 0.001, 0.001),
                step_mult=0.001,
-               hidden_size=4,
-               hidden_layers=2,
                initial_momentum_decays=(0.9, 0.99, 0.999),
                initial_rms_decays=(0.999,),
                initial_adafactor_decays=(0.9, 0.99, 0.999),
                nominal_stepsize=0.,
                weight_decay=0.,
-               concat_weights=True,
-               make_separate_weights=False,
-               split_weights=False,
                nominal_controller=False,
                regularization_controller=False,
                nominal_grad_estimator="AdamAggMo",
@@ -92,21 +89,17 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
                aggregate_nom_magnitude=False,
                aggregate_reg_magnitude=False,
                normalize_blackbox=False,
-               selfnormalize_blackbox=False):
-
+               selfnormalize_blackbox=False,
+               method="nfn"):
     super().__init__()
     self._exp_mult = exp_mult
     self._step_mult = step_mult
-    self._hidden_size = hidden_size
-    self._hidden_layers = hidden_layers
     self._initial_momentum_decays = initial_momentum_decays
     self._initial_rms_decays = initial_rms_decays
     self._initial_adafactor_decays = initial_adafactor_decays
-    self._concat_weights = concat_weights
-    self._make_separate_weights = make_separate_weights
-    self._split_weights = split_weights
     self._stepsize = nominal_stepsize
     self._nom_controller = nominal_controller
+    assert not nominal_controller
     self._reg_controller = regularization_controller
     self._weight_decay = weight_decay
     self._nominal_grad_estimator = nominal_grad_estimator
@@ -116,10 +109,22 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     self._normalize_blackbox = normalize_blackbox
     self._selfnormalize_blackbox = selfnormalize_blackbox
 
-    self._mod_init, self._mod_apply = hk.without_apply_rng(
-        hk.transform(self._mod))
+    self._example_params = task.init(jax.random.PRNGKey(0))
+    if method == "nfn":
+      perm_spec = nfn_lopts.make_hk_perm_spec(self._example_params)
+      self._network = nfn_lopts.HybridMLPNFN(
+          in_channels=39,
+          hidden_channels=32,
+          out_channels=1,
+          num_layers=3,
+          perm_spec=perm_spec,
+          ptwise_init=True,
+      )
+    else:
+      self._network = nfn_lopts.MLPForOpt(
+          hidden_channels=32, out_channels=4, num_layers=4, pos_emb=False)
 
-  def _mod(self, global_feat, p, g, m, rms, fac_g, fac_vec_col, fac_vec_row,
+  def _inp(self, global_feat, p, g, m, rms, fac_g, fac_vec_col, fac_vec_row,
            fac_vec_v):
     # this doesn't work with scalar parameters, so instead lets just reshape.
     if not p.shape:
@@ -131,9 +136,6 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
       fac_vec_v = jnp.expand_dims(fac_vec_v, 0)
       fac_vec_col = jnp.expand_dims(fac_vec_col, 0)
       fac_vec_row = jnp.expand_dims(fac_vec_row, 0)
-      did_reshape = True
-    else:
-      did_reshape = False
     inps = []
 
     inps.append(jnp.expand_dims(g, axis=-1))
@@ -191,145 +193,33 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
       fac_mom_mult = m * (fac_vec_v + 1e-6)**-0.5
       inps.append(fac_mom_mult)
 
-    # Build the weights of the NN
-    last_size = jnp.concatenate(inps, axis=-1).shape[-1]
-    last_size += global_feat["training_step_feature"].shape[-1]
+    # concat the inputs, normalize
+    inp_stack = jnp.concatenate(inps, axis=-1)
+    axis = list(range(len(p.shape)))
+    inp_stack = second_moment_normalizer(inp_stack, axis=axis)
 
-    weights = []
-    biases = []
+    # add features that should not be normalized
+    training_step_feature = global_feat["training_step_feature"]
+    stacked = jnp.reshape(training_step_feature, [1] * len(axis) +
+                          list(training_step_feature.shape[-1:]))
+    stacked = jnp.tile(stacked, list(p.shape) + [1])
+    inp_stack = jnp.concatenate([inp_stack, stacked], axis=-1)
+    return inp_stack
 
-    out_dim = [4]
-    for wi, w in enumerate([self._hidden_size] * self._hidden_layers + out_dim):
-      stddev = 1. / onp.sqrt(last_size)
-      w_init = hk.initializers.TruncatedNormal(stddev=stddev)
-
-      make_full_weights = self._concat_weights or (
-          not self._make_separate_weights)
-      if make_full_weights:
-        weights.append(
-            hk.get_parameter(
-                f"w{wi}", shape=(last_size, w), dtype=jnp.float32, init=w_init))
-        biases.append(
-            hk.get_parameter(
-                f"b{wi}", shape=(w,), dtype=jnp.float32, init=jnp.zeros))
-      else:
-        # Otherwise weights will be stored as scalars.
-        # these scalars could be made from scratch, split from weights made
-        # above
-        if self._make_separate_weights:
-          # Manually make the weight matrix in scalars.
-          weights.append([])
-          for vi in range(last_size):
-            ww = []
-            for oi in range(w):
-              wij = hk.get_parameter(
-                  f"w{wi}_{vi}_{oi}", shape=[], dtype=jnp.float32, init=w_init)
-              ww.append(wij)
-            weights[-1].append(ww)
-          biases.append([])
-          for oi in range(w):
-            b = hk.get_parameter(
-                f"b{wi}_{oi}", shape=[], dtype=jnp.float32, init=jnp.zeros)
-            biases[-1].append(b)
-        elif self._split_weights:
-          # split up the weights first before running computation.
-          f = list(x for x in weights[-1].ravel())
-          weights[-1] = [[None] * w for i in range(last_size)]
-          for fi, ff in enumerate(f):
-            i = fi % last_size
-            j = fi // last_size
-            weights[-1][i][j] = ff
-            biases[-1] = list(b for b in biases[-1])
-      last_size = w
-
-    # 2 different methods to compute the learned optimizer weight update are
-    # provided. First, using matmuls (like a standard NN). Second, with the
-    # computation unpacked using only scalar math. This uses a different path
-    # in hardware and can be much faster for small learned optimizer hidden
-    # sizes.
-    if self._concat_weights:
-      # concat the inputs, normalize
-      inp_stack = jnp.concatenate(inps, axis=-1)
-      axis = list(range(len(p.shape)))
-      inp_stack = second_moment_normalizer(inp_stack, axis=axis)
-
-      # add features that should not be normalized
-      training_step_feature = global_feat["training_step_feature"]
-      stacked = jnp.reshape(training_step_feature, [1] * len(axis) +
-                            list(training_step_feature.shape[-1:]))
-      stacked = jnp.tile(stacked, list(p.shape) + [1])
-      inp_stack = jnp.concatenate([inp_stack, stacked], axis=-1)
-
-      # Manually run the neural network.
-      net = inp_stack
-      for wi, (w, b) in enumerate(zip(weights, biases)):
-        o_tmp = net @ w
-        net = o_tmp + jnp.broadcast_to(b, list(net.shape[0:-1]) + [w.shape[-1]])  # pytype: disable=attribute-error
-
-        if wi != len(weights) - 1:
-          net = jax.nn.relu(net)
-
-      direction = net[..., 0]
-      magnitude = net[..., 1]
-      if self._nom_controller:
-        nom_magnitude = net[..., 2]
-      else:
-        nom_magnitude = jnp.ones_like(net[..., 0])
-
-      if self._reg_controller:
-        reg_magnitude = net[..., 3]
-      else:
-        reg_magnitude = jnp.zeros_like(net[..., 0])
+  def _produce_update(self, p, m, g, rms, out):
+    rsqrt = lax.rsqrt(rms + 1e-6)
+    adam_feats = m * rsqrt
+    direction = out[..., 0]
+    magnitude = out[..., 1]
+    if self._nom_controller:
+      nom_magnitude = out[..., 2]
     else:
-      # The scalar math path.
-      flat_features = []
-      for i in inps:
-        flat_features.extend(
-            [jnp.squeeze(x, -1) for x in jnp.split(i, i.shape[-1], axis=-1)])
+      nom_magnitude = jnp.ones_like(out[..., 0])
 
-      # match the second moment normalize calculation but applied to each scalar
-      inp = [
-          x * lax.rsqrt(1e-5 + jnp.mean(jnp.square(x), keepdims=True))
-          for x in flat_features
-      ]
-      for wi, (w, b) in enumerate(zip(weights, biases)):
-        grids = []
-
-        # hidden layer wi
-        for oi in range(len(w[0])):
-          outs = []
-          for vi, v in enumerate(inp):
-            if type(w) == list:  # pylint: disable=unidiomatic-typecheck
-              outs.append(v * w[vi][oi])
-            else:
-              outs.append(v * w[vi, oi])  # pytype: disable=unsupported-operands
-
-          if wi == 0:
-            training_step_feature = global_feat["training_step_feature"]
-            for i, vi in enumerate(
-                range(vi + 1, vi + 1 + len(training_step_feature))):
-              if type(w) == list:  # pylint: disable=unidiomatic-typecheck
-                outs.append(training_step_feature[i] * w[vi][oi])
-              else:
-                outs.append(training_step_feature[i] * w[vi, oi])  # pytype: disable=unsupported-operands
-
-          grids.append(outs)
-
-        out_mul = [sum(g) for g in grids]
-
-        # bias
-        inp = []
-        for oi, net in enumerate(out_mul):
-          inp.append(net + b[oi])
-
-        # activation
-        if wi != len(weights) - 1:
-          inp = [jax.nn.relu(x) for x in inp]
-
-      direction = inp[0]
-      magnitude = inp[1]
-      nom_magnitude = inp[2] if self._nom_controller else jnp.ones_like(inp[0])
-      reg_magnitude = inp[3] if self._reg_controller else jnp.zeros_like(inp[0])
+    if self._reg_controller:
+      reg_magnitude = out[..., 3]
+    else:
+      reg_magnitude = jnp.zeros_like(out[..., 0])
 
     if self._aggregate_magnitude:
       magnitude = jnp.mean(magnitude)
@@ -373,64 +263,27 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     new_p = reg * p
     new_p -= step
     new_p -= nom_step
-
-    if did_reshape:
-      new_p = jnp.squeeze(new_p, 0)
-
-    # Finally, log some metrics out
-    avg_step_size = jnp.mean(jnp.abs(step))
-    summary.summary("adafac_mlp_lopt/avg_step_size", avg_step_size)
-    summary.summary(
-        "adafac_mlp_lopt/avg_step_size_hist",
-        avg_step_size,
-        aggregation="collect")
-    summary.summary("adafac_mlp_lopt/direction/mean_abs",
-                    jnp.mean(jnp.abs(direction)))
-    summary.summary("adafac_mlp_lopt/magnitude/mean_abs",
-                    jnp.mean(jnp.abs(magnitude)))
-    summary.summary("adafac_mlp_lopt/magnitude/mean", jnp.mean(magnitude))
-    summary.summary("adafac_mlp_lopt/grad/mean_abs", jnp.mean(jnp.abs(g)))
-
     return new_p
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
     # We meta-learn:
     # * weights of the MLP
     # * decays of momentum, RMS, and adafactor style accumulators
-
-    training_step_feature = tanh_embedding(1)
-    global_features = {
-        "iterations": 0,
-        "num_steps": 10,
-        "training_step_feature": training_step_feature,
-    }
-    # fake weights with 2 dimension
-    r = 10
-    c = 10
-    p = jnp.ones([r, c])
-    g = jnp.ones([r, c])
-
-    m = jnp.ones([r, c, len(self._initial_momentum_decays)])
-    rms = jnp.ones([r, c, len(self._initial_rms_decays)])
-
-    fac_g = jnp.ones([r, c, len(self._initial_adafactor_decays)])
-    fac_vec_row = jnp.ones([r, len(self._initial_adafactor_decays)])
-    fac_vec_col = jnp.ones([c, len(self._initial_adafactor_decays)])
-    fac_vec_v = jnp.ones([len(self._initial_adafactor_decays)])
-    mod_theta = self._mod_init(key, global_features, p, g, m, rms, fac_g,
-                               fac_vec_col, fac_vec_row, fac_vec_v)
+    example_inp = jax.tree_util.tree_map(
+      lambda x: jnp.repeat(x[..., None], 39, -1), self._example_params)
+    params = self._network.init(key, example_inp)
     return hk.data_structures.to_haiku_dict({
         "momentum_decays": jnp.zeros([len(self._initial_momentum_decays)]),
         "rms_decays": jnp.zeros([len(self._initial_rms_decays)]),
         "adafactor_decays": jnp.zeros([len(self._initial_adafactor_decays)]),
-        "nn": mod_theta
+        "nn": params,
     })
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
              is_training: Optional[bool] = False) -> opt_base.Optimizer:
 
-    mod_apply = self._mod_apply
+    network_fn = self._network.apply
     parent = self
 
     class _Opt(opt_base.Optimizer):
@@ -501,14 +354,17 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
             "training_step_feature": training_step_feature,
         }
 
-        fun = functools.partial(mod_apply, self.theta["nn"], global_features)
-
-        next_params = jax.tree_util.tree_map(fun, opt_state.params, grad,
-                                             next_mom_rolling.m,
-                                             next_rms_rolling.rms, fac_g,
-                                             next_fac_rolling_features.v_col,
-                                             next_fac_rolling_features.v_row,
-                                             next_fac_rolling_features.v_diag)
+        inp_fn = functools.partial(parent._inp, global_features)
+        inps = jax.tree_util.tree_map(
+          inp_fn, opt_state.params, grad, next_mom_rolling.m,
+          next_rms_rolling.rms, fac_g, next_fac_rolling_features.v_col,
+          next_fac_rolling_features.v_row, next_fac_rolling_features.v_diag)
+        out = network_fn(self.theta["nn"], inps)
+        next_params = jax.tree_util.tree_map(
+          parent._produce_update,
+          opt_state.params,
+          next_mom_rolling.m,
+          grad, next_rms_rolling.rms, out)
 
         next_opt_state = AdafacMLPLOptState(
             params=next_params,
