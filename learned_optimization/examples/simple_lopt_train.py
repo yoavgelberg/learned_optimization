@@ -129,6 +129,15 @@ def train(train_log_dir: str,
       nominal_stepsize=FLAGS.step_mult,
       step_mult=FLAGS.step_mult * FLAGS.out_mult,
       method="nfn")
+  elif FLAGS.lopt == "nfnhybrid_adam":
+    assert FLAGS.pointwise, "Only pointwise is supported."
+    lopt = adafac_nominal.MLPNomLOpt(
+      task,
+      nominal_grad_estimator="Adam",
+      # Matching the other LOpt convention of step_mult * (nominal + out_mult * f( ))
+      nominal_stepsize=FLAGS.step_mult,
+      step_mult=FLAGS.step_mult * FLAGS.out_mult,
+      method="nfn_hybrid")
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)

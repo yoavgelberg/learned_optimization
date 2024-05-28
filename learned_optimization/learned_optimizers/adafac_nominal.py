@@ -112,6 +112,16 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     self._example_params = task.init(jax.random.PRNGKey(0))
     if method == "nfn":
       perm_spec = nfn_lopts.make_hk_perm_spec(self._example_params)
+      self._network = nfn_lopts.UnivNFNForOpt(
+          in_channels=39,
+          hidden_channels=32,
+          out_channels=1,
+          num_layers=3,
+          perm_spec=perm_spec,
+          ptwise_init=True,
+      )
+    elif method == "nfn_hybrid":
+      perm_spec = nfn_lopts.make_hk_perm_spec(self._example_params)
       self._network = nfn_lopts.HybridMLPNFN(
           in_channels=39,
           hidden_channels=32,
