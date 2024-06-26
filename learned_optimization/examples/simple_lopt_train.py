@@ -110,34 +110,35 @@ def train(train_log_dir: str,
     lopt = adafac_nominal.MLPNomLOpt(
       task,
       nominal_grad_estimator="Adam",
-      nominal_stepsize=FLAGS.step_mult,
-      step_mult=FLAGS.out_mult)
+      nominal_stepsize=step_mult,
+      step_mult=out_mult)
   elif FLAGS.lopt == "mlp_adam":
     lopt = adafac_nominal.MLPNomLOpt(
       task,
       nominal_grad_estimator="Adam",
       # Matching the other LOpt convention of step_mult * (nominal + out_mult * f( ))
-      nominal_stepsize=FLAGS.step_mult,
-      step_mult=FLAGS.step_mult * FLAGS.out_mult,
+      # Adafac nominal uses nominal_stepsize * nominal + step_mult * f( )
+      nominal_stepsize=step_mult,
+      step_mult=step_mult * out_mult,
       method="mlp")
   elif FLAGS.lopt == "nfn_adam":
     assert FLAGS.pointwise, "Only pointwise is supported."
     lopt = adafac_nominal.MLPNomLOpt(
       task,
       nominal_grad_estimator="Adam",
-      # Matching the other LOpt convention of step_mult * (nominal + out_mult * f( ))
-      nominal_stepsize=FLAGS.step_mult,
-      step_mult=FLAGS.step_mult * FLAGS.out_mult,
+      nominal_stepsize=step_mult,
+      step_mult=step_mult * out_mult,
+      learnable_hp=FLAGS.learnable_hp,
       method="nfn")
   elif FLAGS.lopt == "nfnhybrid_adam":
     assert FLAGS.pointwise, "Only pointwise is supported."
     lopt = adafac_nominal.MLPNomLOpt(
       task,
       nominal_grad_estimator="Adam",
-      # Matching the other LOpt convention of step_mult * (nominal + out_mult * f( ))
-      nominal_stepsize=FLAGS.step_mult,
-      step_mult=FLAGS.step_mult * FLAGS.out_mult,
-      method="nfn_hybrid")
+      nominal_stepsize=step_mult,
+      step_mult=step_mult * out_mult,
+      learnable_hp=FLAGS.learnable_hp,
+      method="nfn_hybrid",)
 
   # trunc_sched = truncation_schedule.LogUniformLengthSchedule(
   #     min_length=100, max_length=max_length)

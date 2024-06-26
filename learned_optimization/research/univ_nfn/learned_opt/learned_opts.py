@@ -325,6 +325,7 @@ class HybridMLPNFN(nn.Module):
     self.final = make_layer(out_channels, hidden_channels)
 
   def __call__(self, inp_features):
+    inp_features = data_structures.to_mutable_dict(inp_features)
     features = universal_layers.nf_relu(self.mlp(inp_features))
     return self.final(features, self.perm_spec.unfreeze())
 

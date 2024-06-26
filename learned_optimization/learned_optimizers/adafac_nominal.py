@@ -29,6 +29,7 @@ from learned_optimization.learned_optimizers import base as lopt_base
 from learned_optimization.learned_optimizers import common
 from learned_optimization.optimizers import base as opt_base
 from learned_optimization.research.univ_nfn.learned_opt import learned_opts as nfn_lopts
+from haiku.data_structures import to_mutable_dict
 import numpy as onp
 
 PRNGKey = jnp.ndarray
@@ -90,9 +91,10 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
                aggregate_reg_magnitude=False,
                normalize_blackbox=False,
                selfnormalize_blackbox=False,
+               learnable_hp=False,
                method="nfn"):
     super().__init__()
-    self._exp_mult = exp_mult
+    self._exp_mult = onp.array(exp_mult)
     self._step_mult = step_mult
     self._initial_momentum_decays = initial_momentum_decays
     self._initial_rms_decays = initial_rms_decays
@@ -108,8 +110,9 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     self._aggregate_reg_magnitude = aggregate_reg_magnitude
     self._normalize_blackbox = normalize_blackbox
     self._selfnormalize_blackbox = selfnormalize_blackbox
+    self._learnable_hp = learnable_hp
 
-    self._example_params = task.init(jax.random.PRNGKey(0))
+    self._example_params = to_mutable_dict(task.init(jax.random.PRNGKey(0)))
     if method == "nfn":
       perm_spec = nfn_lopts.make_hk_perm_spec(self._example_params)
       self._network = nfn_lopts.UnivNFNForOpt(
@@ -216,7 +219,7 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     inp_stack = jnp.concatenate([inp_stack, stacked], axis=-1)
     return inp_stack
 
-  def _produce_update(self, p, m, g, rms, out):
+  def _produce_update(self, p, m, g, rms, out, step_mult, exp_mult, stepsize):
     rsqrt = lax.rsqrt(rms + 1e-6)
     adam_feats = m * rsqrt
     direction = out[..., 0]
@@ -238,8 +241,8 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     if self._aggregate_reg_magnitude:
       reg_magnitude = jnp.mean(reg_magnitude)
 
-    step = direction * jnp.exp(magnitude * self._exp_mult[0])
-    step *= self._step_mult
+    step = direction * jnp.exp(magnitude * exp_mult[0])
+    step *= step_mult
 
     if self._normalize_blackbox:
       step = step * rsqrt[..., 0]
@@ -249,7 +252,7 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
 
     step = step.reshape(p.shape)
 
-    reg = (1. - self._weight_decay * jnp.exp(reg_magnitude * self._exp_mult[2]))
+    reg = (1. - self._weight_decay * jnp.exp(reg_magnitude * exp_mult[2]))
     reg = reg.reshape(p.shape)
 
     # nominal grad estimator
@@ -266,8 +269,8 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     else:
       raise NotImplementedError
 
-    nom_step = self._stepsize * jnp.exp(
-        nom_magnitude * self._exp_mult[1]) * g_est
+    nom_step = stepsize * jnp.exp(
+        nom_magnitude * exp_mult[1]) * g_est
 
     # compute updated params
     new_p = reg * p
@@ -282,12 +285,15 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     example_inp = jax.tree_util.tree_map(
       lambda x: jnp.repeat(x[..., None], 39, -1), self._example_params)
     params = self._network.init(key, example_inp)
-    return hk.data_structures.to_haiku_dict({
+    return {
         "momentum_decays": jnp.zeros([len(self._initial_momentum_decays)]),
         "rms_decays": jnp.zeros([len(self._initial_rms_decays)]),
         "adafactor_decays": jnp.zeros([len(self._initial_adafactor_decays)]),
         "nn": params,
-    })
+        "step_mult": jnp.log(jnp.asarray(self._step_mult)),
+        "exp_mult": jnp.log(jnp.asarray(self._exp_mult)),
+        "stepsize": jnp.log(jnp.asarray(self._stepsize)),
+    }
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
@@ -370,8 +376,21 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
           next_rms_rolling.rms, fac_g, next_fac_rolling_features.v_col,
           next_fac_rolling_features.v_row, next_fac_rolling_features.v_diag)
         out = network_fn(self.theta["nn"], inps)
-        next_params = jax.tree_util.tree_map(
+        if parent._learnable_hp:
+          step_mult = jnp.exp(self.theta["step_mult"])
+          exp_mult = jnp.exp(self.theta["exp_mult"])
+          stepsize = jnp.exp(self.theta["stepsize"])
+        else:
+          step_mult = parent._step_mult
+          exp_mult = parent._exp_mult
+          stepsize = parent._stepsize
+        produce_update = functools.partial(
           parent._produce_update,
+          step_mult=step_mult,
+          exp_mult=exp_mult,
+          stepsize=stepsize)
+        next_params = jax.tree_util.tree_map(
+          produce_update,
           opt_state.params,
           next_mom_rolling.m,
           grad, next_rms_rolling.rms, out)

@@ -1,3 +1,4 @@
 .eggs/
 **.pyc
 learned_optimization.egg-info/*
+logs
