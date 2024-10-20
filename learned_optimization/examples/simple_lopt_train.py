@@ -107,11 +107,7 @@ def train(train_log_dir: str,
     # Optax uses trace instead of EMA, so for momentum=0.9 the LR should be divided by 10.
     lopt = lopt_base.LearnableSGDM(initial_lr=step_mult / 10)
   elif FLAGS.lopt == "adam":
-    lopt = adafac_nominal.MLPNomLOpt(
-      task,
-      nominal_grad_estimator="Adam",
-      nominal_stepsize=step_mult,
-      step_mult=out_mult)
+    lopt = lopt_base.LearnableAdam(initial_lr=step_mult)
   elif FLAGS.lopt == "mlp_adam":
     lopt = adafac_nominal.MLPNomLOpt(
       task,
@@ -120,6 +116,7 @@ def train(train_log_dir: str,
       # Adafac nominal uses nominal_stepsize * nominal + step_mult * f( )
       nominal_stepsize=step_mult,
       step_mult=step_mult * out_mult,
+      learnable_hp=FLAGS.learnable_hp,
       method="mlp")
   elif FLAGS.lopt == "nfn_adam":
     assert FLAGS.pointwise, "Only pointwise is supported."
