@@ -226,9 +226,12 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     inp_stack = jnp.concatenate([inp_stack, stacked], axis=-1)
     return inp_stack
 
-  def _produce_update(self, p, m, g, rms, out, step_mult, exp_mult, stepsize):
-    rsqrt = lax.rsqrt(rms + 1e-6)
-    adam_feats = m * rsqrt
+  def _produce_update(self, p, m, g, rms, out, step_mult, exp_mult, stepsize, mom_decay, rms_decay):
+    m_corrected = m / (1 - mom_decay)
+    rms_corrected = rms / (1 - rms_decay)
+    # rsqrt = lax.rsqrt(rms + 1e-6)
+    rsqrt = 1 / (jnp.sqrt(rms_corrected) + 1e-8)  # matches optax eps=1e-8, eps_root=0
+    adam_feats = m_corrected * rsqrt
     direction = out[..., 0]
     magnitude = out[..., 1]
     if self._nom_controller:
@@ -270,7 +273,7 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     elif self._nominal_grad_estimator == "AggMo":
       g_est = jnp.mean(m, axis=-1)
     elif self._nominal_grad_estimator == "Adam":
-      g_est = adam_feats[..., -1]
+      g_est = adam_feats[..., 0]
     elif self._nominal_grad_estimator == "AdamAggMo":
       g_est = jnp.mean(adam_feats, axis=-1)
     else:
@@ -391,11 +394,19 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
           step_mult = parent._step_mult
           exp_mult = parent._exp_mult
           stepsize = parent._stepsize
+        mom_decay = param_to_decay(
+            decay_to_param(jnp.asarray(parent._initial_momentum_decays)) +  # pylint: disable=protected-access
+            self.theta["momentum_decays"])
+        rms_decay = param_to_decay(
+            decay_to_param(jnp.asarray(parent._initial_rms_decays)) +  # pylint: disable=protected-access
+            self.theta["rms_decays"])
         produce_update = functools.partial(
           parent._produce_update,
           step_mult=step_mult,
           exp_mult=exp_mult,
-          stepsize=stepsize)
+          stepsize=stepsize,
+          mom_decay=mom_decay,
+          rms_decay=rms_decay)
         next_params = jax.tree_util.tree_map(
           produce_update,
           opt_state.params,
