@@ -92,6 +92,9 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
                normalize_blackbox=False,
                selfnormalize_blackbox=False,
                learnable_hp=False,
+               # Match hidden_channels and num_layers defaults in original code.
+               hidden_channels=4,
+               num_layers=2,
                method="nfn"):
     super().__init__()
     self._exp_mult = onp.array(exp_mult)
@@ -117,9 +120,9 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
       perm_spec = nfn_lopts.make_hk_perm_spec(self._example_params)
       self._network = nfn_lopts.UnivNFNForOpt(
           in_channels=39,
-          hidden_channels=32,
-          out_channels=1,
-          num_layers=3,
+          hidden_channels=hidden_channels,
+          out_channels=4,
+          num_layers=num_layers,
           perm_spec=perm_spec,
           ptwise_init=True,
       )
@@ -127,15 +130,19 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
       perm_spec = nfn_lopts.make_hk_perm_spec(self._example_params)
       self._network = nfn_lopts.HybridMLPNFN(
           in_channels=39,
-          hidden_channels=32,
-          out_channels=1,
-          num_layers=3,
+          hidden_channels=hidden_channels,
+          out_channels=4,
+          num_layers=num_layers,
           perm_spec=perm_spec,
           ptwise_init=True,
       )
     else:
       self._network = nfn_lopts.MLPForOpt(
-          hidden_channels=32, out_channels=4, num_layers=4, pos_emb=False)
+          hidden_channels=hidden_channels,
+          out_channels=4,
+          num_layers=num_layers+1,
+          pos_emb=False
+      )
 
   def _inp(self, global_feat, p, g, m, rms, fac_g, fac_vec_col, fac_vec_row,
            fac_vec_v):
