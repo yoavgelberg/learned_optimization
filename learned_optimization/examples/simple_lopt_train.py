@@ -45,7 +45,7 @@ FLAGS = flags.FLAGS
 
 
 def train(train_log_dir: str,
-          outer_iterations: int = 50000,
+          outer_iterations: int = 100_000,
           task: Optional[tasks_base.Task] = None):
   """Train a learned optimizer!"""
 
