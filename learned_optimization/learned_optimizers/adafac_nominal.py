@@ -226,9 +226,9 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
     inp_stack = jnp.concatenate([inp_stack, stacked], axis=-1)
     return inp_stack
 
-  def _produce_update(self, p, m, g, rms, out, step_mult, exp_mult, stepsize, mom_decay, rms_decay):
-    m_corrected = m / (1 - mom_decay)
-    rms_corrected = rms / (1 - rms_decay)
+  def _produce_update(self, p, m, g, rms, out, step_mult, exp_mult, stepsize, mom_decay_pow, rms_decay_pow):
+    m_corrected = m / (1 - mom_decay_pow)  # m / (1 - beta_1 ** t)
+    rms_corrected = rms / (1 - rms_decay_pow)  # rms / (1 - beta_2 ** t)
     # rsqrt = lax.rsqrt(rms + 1e-6)
     rsqrt = 1 / (jnp.sqrt(rms_corrected) + 1e-8)  # matches optax eps=1e-8, eps_root=0
     adam_feats = m_corrected * rsqrt
@@ -405,8 +405,8 @@ class MLPNomLOpt(lopt_base.LearnedOptimizer):
           step_mult=step_mult,
           exp_mult=exp_mult,
           stepsize=stepsize,
-          mom_decay=mom_decay,
-          rms_decay=rms_decay)
+          mom_decay_pow=mom_decay ** (opt_state.iteration + 1),
+          rms_decay_pow=rms_decay ** (opt_state.iteration + 1))
         next_params = jax.tree_util.tree_map(
           produce_update,
           opt_state.params,
