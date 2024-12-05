@@ -181,8 +181,8 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
                                 list(training_step_feature.shape[-1:]))
           stacked = jnp.tile(stacked, list(p.shape) + [1])
 
-          sum_features = jnp.reshape(sum_features, [1] * len(axis) + list(sum_features.shape[-1:]))
-          sum_features = jnp.tile(sum_features, list(p.shape) + [1])
+          s_features = jnp.reshape(sum_features, [1] * len(axis) + list(sum_features.shape[-1:]))
+          s_features = jnp.tile(s_features, list(p.shape) + [1])
 
           inp = jnp.concatenate([inp_stack, stacked, sum_features], axis=-1)
 
