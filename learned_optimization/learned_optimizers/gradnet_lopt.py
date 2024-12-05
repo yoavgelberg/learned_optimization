@@ -184,7 +184,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           s_features = jnp.reshape(sum_features, [1] * len(axis) + list(sum_features.shape[-1:]))
           s_features = jnp.tile(s_features, list(p.shape) + [1])
 
-          inp = jnp.concatenate([inp_stack, stacked, sum_features], axis=-1)
+          inp = jnp.concatenate([inp_stack, stacked, s_features], axis=-1)
 
           # apply the per parameter MLP.
           output = mod.apply(theta, inp)
