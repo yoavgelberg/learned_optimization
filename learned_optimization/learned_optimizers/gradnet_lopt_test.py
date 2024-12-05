@@ -50,7 +50,7 @@ if __name__ == "__main__":
           num_tasks=4,
           random_initial_iteration_offset=max_length)
       return truncated_pes.TruncatedPES(
-          truncated_step=truncated_step, trunc_length=50)
+          truncated_step=truncated_step, trunc_length=2000)
 
 
     mlp_task_family = tasks_base.single_task_to_family(
@@ -70,9 +70,7 @@ if __name__ == "__main__":
     losses = []
     import tqdm
 
-    import os
-    # Pulling this from an environment variable so this file can be run in automated tests faster.
-    outer_train_steps = int(os.environ.get("LOPT_META_TRAIN_LENGTH", 500))
+    outer_train_steps = 3000
 
     for i in tqdm.trange(outer_train_steps):
       outer_trainer_state, loss, metrics = outer_trainer.update(
