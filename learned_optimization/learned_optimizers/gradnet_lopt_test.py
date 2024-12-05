@@ -1,3 +1,4 @@
+import wandb
 import flax
 import flax.linen as nn
 import numpy as np
@@ -50,7 +51,7 @@ if __name__ == "__main__":
           num_tasks=4,
           random_initial_iteration_offset=max_length)
       return truncated_pes.TruncatedPES(
-          truncated_step=truncated_step, trunc_length=2000)
+          truncated_step=truncated_step, trunc_length=100)
 
 
     mlp_task_family = tasks_base.single_task_to_family(
@@ -70,13 +71,20 @@ if __name__ == "__main__":
     losses = []
     import tqdm
 
-    outer_train_steps = 3000
+    outer_train_steps = 1000
+
+    if True:
+       wandb.init(
+            settings=wandb.Settings(start_method="thread"),
+            project="gradient-networks",
+            name="lopt",
+        )
 
     for i in tqdm.trange(outer_train_steps):
       outer_trainer_state, loss, metrics = outer_trainer.update(
           outer_trainer_state, key, with_metrics=False)
       losses.append(loss)
+      wandb.log({"meta training loss": loss})
 
     print(losses)
-    print(metrics)
 
