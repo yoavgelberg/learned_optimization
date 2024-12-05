@@ -54,7 +54,7 @@ def _tanh_embedding(iterations):
 
 
 @flax.struct.dataclass
-class MLPLOptState:
+class GradNetLOptState:
   params: Any
   rolling_features: common.MomAccumulator
   iteration: jnp.ndarray
@@ -62,10 +62,9 @@ class MLPLOptState:
 
 
 @gin.configurable
-class MLPLOpt(lopt_base.LearnedOptimizer):
-  """Learned optimizer leveraging a per parameter MLP.
-
-  This is also known as LOLv2.
+class GradNetLOpt(lopt_base.LearnedOptimizer):
+  """
+  Learned optimizer leveraging a per parameter MLP. and a gradient net.
   """
 
   def __init__(self,
@@ -86,8 +85,8 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
     self._mod = hk.without_apply_rng(hk.transform(ff_mod))
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
-    # There are 19 features used as input. For now, hard code this.
-    return self._mod.init(key, jnp.zeros([0, 19]))
+    # There are 22 features used as input. For now, hard code this.
+    return self._mod.init(key, jnp.zeros([0, 22]))
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
@@ -106,10 +105,10 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
                params: lopt_base.Params,
                model_state: Any = None,
                num_steps: Optional[int] = None,
-               key: Optional[PRNGKey] = None) -> MLPLOptState:
+               key: Optional[PRNGKey] = None) -> GradNetLOptState:
         """Initialize inner opt state."""
 
-        return MLPLOptState(
+        return GradNetLOptState(
             params=params,
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
@@ -117,17 +116,36 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
 
       def update(
           self,  # pytype: disable=signature-mismatch  # overriding-parameter-count-checks
-          opt_state: MLPLOptState,
+          opt_state: GradNetLOptState,
           grad: Any,
           loss: float,
           model_state: Any = None,
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
-      ) -> MLPLOptState:
+      ) -> GradNetLOptState:
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
         training_step_feature = _tanh_embedding(opt_state.iteration)
+
+        # Compute sum
+        p_sum = jax.tree_util.tree_map(lambda x: jnp.sum(x), opt_state.params)
+        p_sum = jax.tree_util.tree_reduce(lambda x, y: x + y, p_sum, initializer=jnp.zeros([]))
+        g_sum = jax.tree_util.tree_map(lambda x: jnp.sum(x), grad)
+        g_sum = jax.tree_util.tree_reduce(lambda x, y: x + y, g_sum, initializer=jnp.zeros([]))
+        m_sum = jax.tree_util.tree_map(lambda x: jnp.sum(x), next_rolling_features.m)
+        m_sum = jax.tree_util.tree_reduce(lambda x, y: x + y, m_sum, initializer=0.0)
+
+        # Get number of parameters
+        num_params = jax.tree_util.tree_reduce(lambda x, y: x + y, jax.tree_util.tree_map(lambda x: 1, opt_state.params), initializer=0)
+
+        # Get number of gradients
+        num_grads = jax.tree_util.tree_reduce(lambda x, y: x + y, jax.tree_util.tree_map(lambda x: 1, grad), initializer=0)
+
+        # Get number of momentum values
+        num_m = jax.tree_util.tree_reduce(lambda x, y: x + y, jax.tree_util.tree_map(lambda x: 1, next_rolling_features.m), initializer=0)
+
+        sum_features = jnp.array([p_sum / num_params, g_sum / num_grads, m_sum / num_m])
 
         def _update_tensor(p, g, m):
           # this doesn't work with scalar parameters, so let's reshape.
@@ -163,7 +181,10 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
                                 list(training_step_feature.shape[-1:]))
           stacked = jnp.tile(stacked, list(p.shape) + [1])
 
-          inp = jnp.concatenate([inp_stack, stacked], axis=-1)
+          sum_features = jnp.reshape(sum_features, [1] * len(axis) + list(sum_features.shape[-1:]))
+          sum_features = jnp.tile(sum_features, list(p.shape) + [1])
+
+          inp = jnp.concatenate([inp_stack, stacked, sum_features], axis=-1)
 
           # apply the per parameter MLP.
           output = mod.apply(theta, inp)
@@ -204,7 +225,7 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
 
         next_params = jax.tree_util.tree_map(_update_tensor, opt_state.params,
                                              grad, next_rolling_features.m)
-        next_opt_state = MLPLOptState(
+        next_opt_state = GradNetLOptState(
             params=tree_utils.match_type(next_params, opt_state.params),
             rolling_features=tree_utils.match_type(next_rolling_features,
                                                    opt_state.rolling_features),
