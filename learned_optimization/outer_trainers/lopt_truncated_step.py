@@ -275,10 +275,10 @@ def progress_or_reset_inner_opt_state(
     # summary.summary("task_loss", l)
 
     # Get activations
-    activations = oryx.core.reap(task.loss(p, key1, data), tag="activations")
+    activations = oryx.core.reap(task.loss, tag="activations")(p, key1, data)
 
     # Get tangents
-    bs = [jnp.zeros([size]) for size in task.sizes]
+    bs = [jnp.zeros([activations['a_0'].shape[0], size]) for size in task.sizes]
     tangents = jax.grad(task.loss_with_bs, argnums=list(range(3, len(bs) + 3)))(p, key1, data, *bs)
 
     next_inner_opt_state = opt.update(

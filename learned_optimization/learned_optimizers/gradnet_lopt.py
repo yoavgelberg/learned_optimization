@@ -125,6 +125,11 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> GradNetLOptState:
+        # assert jnp.allclose(grad['model/linear']['b'], tangents[0]), "OH NO!!!"
+        print(f"tangent shape: {tangents[0].shape}")
+        print(f"bg shape: {grad['model/linear']['b'].shape}")
+        print(f"act shape: {activations['a_0'].shape}")
+
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
