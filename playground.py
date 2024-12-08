@@ -64,4 +64,14 @@ b1 = jnp.zeros([10])
 b2 = jnp.zeros([10])
 b3 = jnp.zeros([10])
 b4 = jnp.zeros([1])
+
+
+def loss_fn(params, x, b1, b2, b3, b4, y):
+    pred = model.apply(params, x, b1, b2, b3, b4)
+    return jnp.mean((pred - y) ** 2)
+
+
+grad_fn = jax.grad(loss_fn, argnums=[0, 1, 2, 3, 4, 5])
+
 print(oryx.core.reap(model.apply, tag="activations")(params, x, b1, b2, b3, b4))
+print(grad_fn(params, x, b1, b2, b3, b4, 0.0))
