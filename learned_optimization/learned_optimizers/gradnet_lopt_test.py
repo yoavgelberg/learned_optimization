@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
     outer_train_steps = 1000
 
-    if True:
+    if False:
        wandb.init(
             settings=wandb.Settings(start_method="thread"),
             project="gradient-networks",
@@ -84,7 +84,7 @@ if __name__ == "__main__":
       outer_trainer_state, loss, metrics = outer_trainer.update(
           outer_trainer_state, key, with_metrics=False)
       losses.append(loss)
-      wandb.log({"meta training loss": loss})
+      # wandb.log({"meta training loss": loss})
 
     print(losses)
 

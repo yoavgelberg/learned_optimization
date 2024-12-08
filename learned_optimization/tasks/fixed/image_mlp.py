@@ -45,12 +45,12 @@ class _HookableMLPImageTask(base.Task):
     self.sizes = sizes
     self.datasets = datasets
 
-    def _forward_with_bs(inp, bs):
+    def _forward_with_bs(inp, *bs):
       inp = jnp.reshape(inp, [inp.shape[0], -1])
       return HookableMLP(hidden_sizes, output_dim=num_classes, activation=act_fn)(inp, *bs)
 
     def _forward(inp):
-      return _forward_with_bs(inp, [jax.zeros([size]) for size in self.sizes])
+      return _forward_with_bs(inp, *[jnp.zeros([size]) for size in self.sizes])
 
     self._mod = hk.transform(_forward)
     self._mod_with_bs = hk.transform(_forward_with_bs)
@@ -58,7 +58,7 @@ class _HookableMLPImageTask(base.Task):
   def init_with_bs(self, key: PRNGKey) -> Any:
     batch = jax.tree_util.tree_map(lambda x: jnp.ones(x.shape, x.dtype),
                                    self.datasets.abstract_batch)
-    return self._mod_with_bs.init(key, batch["image"], [jax.zeros([size]) for size in self.sizes])
+    return self._mod_with_bs.init(key, batch["image"], [jnp.zeros([size]) for size in self.sizes])
 
   def init(self, key: PRNGKey) -> Any:
     batch = jax.tree_util.tree_map(lambda x: jnp.ones(x.shape, x.dtype),
@@ -67,14 +67,14 @@ class _HookableMLPImageTask(base.Task):
 
   def loss_with_bs(self, params: Params, key: PRNGKey, data: Any, *bs) -> jnp.ndarray:  # pytype: disable=signature-mismatch  # jax-ndarray
     num_classes = self.datasets.extra_info["num_classes"]
-    logits = self._mod_with_bs.apply(params, data["image"], *bs)
+    logits = self._mod_with_bs.apply(params, key, data["image"], *bs)
     labels = jax.nn.one_hot(data["label"], num_classes)
     vec_loss = base.softmax_cross_entropy(logits=logits, labels=labels)
     return jnp.mean(vec_loss)
 
   def loss(self, params: Params, key: PRNGKey, data: Any) -> jnp.ndarray:  # pytype: disable=signature-mismatch  # jax-ndarray
     num_classes = self.datasets.extra_info["num_classes"]
-    logits = self._mod.apply(params, data["image"])
+    logits = self._mod.apply(params, key, data["image"])
     labels = jax.nn.one_hot(data["label"], num_classes)
     vec_loss = base.softmax_cross_entropy(logits=logits, labels=labels)
     return jnp.mean(vec_loss)
@@ -96,14 +96,6 @@ class _HookableMLPImageTask(base.Task):
     maxval = 1.5 * onp.log(num_classes)
     loss = jnp.clip(loss, 0, maxval)
     return jnp.nan_to_num(loss, nan=maxval, posinf=maxval, neginf=maxval)
-
-
-@gin.configurable
-def ImageMLP_Cifar10BW8_Relu32():
-  """A 1 hidden layer, 32 unit MLP for 8x8 black and white cifar10."""
-  datasets = image.cifar10_datasets(
-      batch_size=128, image_size=(8, 8), convert_to_black_and_white=True)
-  return _MLPImageTask(datasets, [32])
 
 @gin.configurable
 def HookableImageMLP_FashionMnist8_Relu32():

@@ -18,7 +18,6 @@
 import functools
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
-import oryx
 import chex
 import flax
 import gin
@@ -34,6 +33,7 @@ from learned_optimization.outer_trainers import full_es
 from learned_optimization.outer_trainers import truncated_step
 from learned_optimization.outer_trainers import truncation_schedule
 from learned_optimization.tasks import base as tasks_base
+import oryx
 
 
 PRNGKey = jnp.ndarray
@@ -278,8 +278,8 @@ def progress_or_reset_inner_opt_state(
     activations = oryx.core.reap(task.loss(p, key1, data), tag="activations")
 
     # Get tangents
-    bs = [jax.zeros([size]) for size in task.sizes]
-    tangents = jax.grad(task.loss_with_bs, argnums=list(range(3, len(bs) + 3)))(p, s, key1, data, *bs)
+    bs = [jnp.zeros([size]) for size in task.sizes]
+    tangents = jax.grad(task.loss_with_bs, argnums=list(range(3, len(bs) + 3)))(p, key1, data, *bs)
 
     next_inner_opt_state = opt.update(
         inner_opt_state, g, activations=activations, tangents=tangents, loss=l, model_state=s, key=key2)
