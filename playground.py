@@ -73,5 +73,10 @@ def loss_fn(params, x, b1, b2, b3, b4, y):
 
 grad_fn = jax.grad(loss_fn, argnums=[0, 1, 2, 3, 4, 5])
 
-print(oryx.core.reap(model.apply, tag="activations")(params, x, b1, b2, b3, b4))
-print(grad_fn(params, x, b1, b2, b3, b4, 0.0))
+activations = oryx.core.reap(model.apply, tag="activations")(params, x, b1, b2, b3, b4)
+
+grads, x_g, b1_g, b2_g, b3_g, b4_g = grad_fn(params, x, b1, b2, b3, b4, 0.0)
+
+
+print(grads["model/linear_0"]["w"])
+print(jnp.einsum("i,j->ij", activations["a_0"], b1_g))
