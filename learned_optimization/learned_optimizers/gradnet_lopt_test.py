@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
 
     mlp_task_family = tasks_base.single_task_to_family(
-        image_mlp.ImageMLP_FashionMnist8_Relu32())
+        image_mlp.HookableImageMLP_FashionMnist8_Relu32())
 
     gradient_estimators = [
         grad_est_fn(mlp_task_family),

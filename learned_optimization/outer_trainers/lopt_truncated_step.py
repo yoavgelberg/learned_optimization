@@ -18,6 +18,7 @@
 import functools
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
+import oryx
 import chex
 import flax
 import gin
@@ -273,8 +274,15 @@ def progress_or_reset_inner_opt_state(
 
     # summary.summary("task_loss", l)
 
+    # Get activations
+    activations = oryx.core.reap(task.loss(p, key1, data), tag="activations")
+
+    # Get tangents
+    bs = [jax.zeros([size]) for size in task.sizes]
+    tangents = jax.grad(task.loss_with_bs, argnums=list(range(3, len(bs) + 3)))(p, s, key1, data, *bs)
+
     next_inner_opt_state = opt.update(
-        inner_opt_state, g, loss=l, model_state=s, key=key2)
+        inner_opt_state, g, activations=activations, tangents=tangents, loss=l, model_state=s, key=key2)
     next_inner_step = inner_step + 1
 
     return next_inner_opt_state, task_param, next_inner_step, jnp.asarray(

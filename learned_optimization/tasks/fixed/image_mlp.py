@@ -16,7 +16,7 @@
 """Tasks based on MLP."""
 # pylint: disable=invalid-name
 
-from typing import Any, Mapping, Tuple
+from typing import Any, Mapping, Tuple, List
 
 import gin
 import haiku as hk
@@ -26,10 +26,90 @@ from learned_optimization.tasks import base
 from learned_optimization.tasks.datasets import image
 import numpy as onp
 
+from learned_optimization.hookable_mlp import HookableMLP
+
 Params = Any
 ModelState = Any
 PRNGKey = jnp.ndarray
 
+class _HookableMLPImageTask(base.Task):
+  """Hookable MLP based image task."""
+
+  def __init__(self,
+               datasets,
+               hidden_sizes,
+               act_fn=jax.nn.relu):
+    super().__init__()
+    num_classes = datasets.extra_info["num_classes"]
+    sizes = list(hidden_sizes) + [num_classes]
+    self.sizes = sizes
+    self.datasets = datasets
+
+    def _forward_with_bs(inp, bs):
+      inp = jnp.reshape(inp, [inp.shape[0], -1])
+      return HookableMLP(hidden_sizes, output_dim=num_classes, activation=act_fn)(inp, *bs)
+
+    def _forward(inp):
+      return _forward_with_bs(inp, [jax.zeros([size]) for size in self.sizes])
+
+    self._mod = hk.transform(_forward)
+    self._mod_with_bs = hk.transform(_forward_with_bs)
+
+  def init_with_bs(self, key: PRNGKey) -> Any:
+    batch = jax.tree_util.tree_map(lambda x: jnp.ones(x.shape, x.dtype),
+                                   self.datasets.abstract_batch)
+    return self._mod_with_bs.init(key, batch["image"], [jax.zeros([size]) for size in self.sizes])
+
+  def init(self, key: PRNGKey) -> Any:
+    batch = jax.tree_util.tree_map(lambda x: jnp.ones(x.shape, x.dtype),
+                                   self.datasets.abstract_batch)
+    return self._mod.init(key, batch["image"])
+
+  def loss_with_bs(self, params: Params, key: PRNGKey, data: Any, *bs) -> jnp.ndarray:  # pytype: disable=signature-mismatch  # jax-ndarray
+    num_classes = self.datasets.extra_info["num_classes"]
+    logits = self._mod_with_bs.apply(params, data["image"], *bs)
+    labels = jax.nn.one_hot(data["label"], num_classes)
+    vec_loss = base.softmax_cross_entropy(logits=logits, labels=labels)
+    return jnp.mean(vec_loss)
+
+  def loss(self, params: Params, key: PRNGKey, data: Any) -> jnp.ndarray:  # pytype: disable=signature-mismatch  # jax-ndarray
+    num_classes = self.datasets.extra_info["num_classes"]
+    logits = self._mod.apply(params, data["image"])
+    labels = jax.nn.one_hot(data["label"], num_classes)
+    vec_loss = base.softmax_cross_entropy(logits=logits, labels=labels)
+    return jnp.mean(vec_loss)
+
+  def loss_with_bs_and_aux(
+      self, params: Params, key: PRNGKey, data: Any, *bs) -> Tuple[jnp.ndarray, Mapping[str, jnp.ndarray]]:
+    loss = self.loss_with_bs(params, key, data, *bs)
+    return loss, {}  # pytype: disable=bad-return-type  # jax-ndarray
+
+  def loss_with_bs_state_and_aux(self, params: Params, state: ModelState, key: PRNGKey, data: Any, *bs) -> Tuple[jnp.ndarray, ModelState, Mapping[str, jnp.ndarray]]:
+    if state is not None:
+      raise ValueError("Define a custom loss_with_state_and_aux when using a"
+                       " state!")
+    loss, aux = self.loss_with_bs_and_aux(params, key, data, *bs)
+    return loss, None, aux
+
+  def normalizer(self, loss):
+    num_classes = self.datasets.extra_info["num_classes"]
+    maxval = 1.5 * onp.log(num_classes)
+    loss = jnp.clip(loss, 0, maxval)
+    return jnp.nan_to_num(loss, nan=maxval, posinf=maxval, neginf=maxval)
+
+
+@gin.configurable
+def ImageMLP_Cifar10BW8_Relu32():
+  """A 1 hidden layer, 32 unit MLP for 8x8 black and white cifar10."""
+  datasets = image.cifar10_datasets(
+      batch_size=128, image_size=(8, 8), convert_to_black_and_white=True)
+  return _MLPImageTask(datasets, [32])
+
+@gin.configurable
+def HookableImageMLP_FashionMnist8_Relu32():
+  """A 1 hidden layer, 32 hidden unit MLP designed for 8x8 fashion mnist."""
+  datasets = image.fashion_mnist_datasets(batch_size=128, image_size=(8, 8))
+  return _HookableMLPImageTask(datasets, [32])
 
 class _MLPImageTask(base.Task):
   """MLP based image task."""

@@ -118,11 +118,15 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           self,  # pytype: disable=signature-mismatch  # overriding-parameter-count-checks
           opt_state: GradNetLOptState,
           grad: Any,
+          activations: Any,
+          tangents: Any,
           loss: float,
           model_state: Any = None,
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> GradNetLOptState:
+        print(f"activations: {activations}")
+        print(f"tangents: {tangents}")
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
