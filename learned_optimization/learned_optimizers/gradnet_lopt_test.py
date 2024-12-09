@@ -1,3 +1,4 @@
+import pickle
 import wandb
 import flax
 import flax.linen as nn
@@ -20,7 +21,6 @@ from learned_optimization.tasks import base as tasks_base
 
 from learned_optimization.learned_optimizers import base as lopt_base
 from learned_optimization.learned_optimizers import gradnet_lopt
-from learned_optimization.learned_optimizers import mlp_lopt
 from learned_optimization.optimizers import base as opt_base
 
 from learned_optimization import optimizers
@@ -37,8 +37,7 @@ if __name__ == "__main__":
     # theta = lopt.init(key)
     theta_opt = opt_base.Adam(1e-3)
 
-    # lopt = gradnet_lopt.GradNetLOpt()
-    lopt = mlp_lopt.MLPLOpt()
+    lopt = gradnet_lopt.GradNetLOpt()
 
     max_length = 300
     trunc_sched = truncation_schedule.LogUniformLengthSchedule(
@@ -50,7 +49,7 @@ if __name__ == "__main__":
           task_family,
           lopt,
           trunc_sched,
-          num_tasks=1,
+          num_tasks=4,
           random_initial_iteration_offset=max_length)
       return truncated_pes.TruncatedPES(
           truncated_step=truncated_step, trunc_length=100)
@@ -75,11 +74,11 @@ if __name__ == "__main__":
 
     outer_train_steps = 1000
 
-    if True:
+    if False:
        wandb.init(
             settings=wandb.Settings(start_method="thread"),
             project="gradient-networks",
-            name="lopt-mlplopt",
+            name="lopt",
         )
 
     for i in tqdm.trange(outer_train_steps):
@@ -88,5 +87,4 @@ if __name__ == "__main__":
       losses.append(loss)
       wandb.log({"meta training loss": loss})
 
-    print(losses)
-
+    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_gradnet.pkl", "wb"))
