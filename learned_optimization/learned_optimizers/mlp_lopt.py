@@ -119,6 +119,8 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
           self,  # pytype: disable=signature-mismatch  # overriding-parameter-count-checks
           opt_state: MLPLOptState,
           grad: Any,
+          activations,
+          tangents,
           loss: float,
           model_state: Any = None,
           is_valid: bool = False,

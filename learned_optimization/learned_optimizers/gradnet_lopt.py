@@ -85,8 +85,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
     self._mod = hk.without_apply_rng(hk.transform(ff_mod))
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
-    # There are 22 features used as input. For now, hard code this.
-    return self._mod.init(key, jnp.zeros([0, 22]))
+    return self._mod.init(key, jnp.zeros([0, 21]))
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
@@ -125,36 +124,25 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> GradNetLOptState:
-        # assert jnp.allclose(grad['model/linear']['b'], tangents[0]), "OH NO!!!"
-        print(f"tangent shape: {tangents[0].shape}")
-        print(f"bg shape: {grad['model/linear']['b'].shape}")
-        print(f"act shape: {activations['a_0'].shape}")
+        activations = [jnp.sum(a, axis=0) for a in activations]
+        tangents = [jnp.sum(t, axis=0) for t in tangents]
+
+        ff = []
+        for a, t in zip(activations, tangents):
+          a = jnp.repeat(a[:, jnp.newaxis], t.shape[0], axis=1)
+          a = jnp.expand_dims(a, -1)
+          t = jnp.repeat(t[jnp.newaxis, :], a.shape[0], axis=0)
+          t = jnp.expand_dims(t, -1)
+          ff.append(jnp.concatenate([a, t], axis=-1))
+
+        fish_feat = {"model/linear": {'w': ff[0], 'b': jnp.stack([activations[1], tangents[0]], axis=1)}, "model/linear_1": {'w': ff[1], 'b': jnp.stack([activations[2], tangents[1]], axis=1)}}
 
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
         training_step_feature = _tanh_embedding(opt_state.iteration)
 
-        # Compute sum
-        p_sum = jax.tree_util.tree_map(lambda x: jnp.sum(x), opt_state.params)
-        p_sum = jax.tree_util.tree_reduce(lambda x, y: x + y, p_sum, initializer=jnp.zeros([]))
-        g_sum = jax.tree_util.tree_map(lambda x: jnp.sum(x), grad)
-        g_sum = jax.tree_util.tree_reduce(lambda x, y: x + y, g_sum, initializer=jnp.zeros([]))
-        m_sum = jax.tree_util.tree_map(lambda x: jnp.sum(x), next_rolling_features.m)
-        m_sum = jax.tree_util.tree_reduce(lambda x, y: x + y, m_sum, initializer=0.0)
-
-        # Get number of parameters
-        num_params = jax.tree_util.tree_reduce(lambda x, y: x + y, jax.tree_util.tree_map(lambda x: 1, opt_state.params), initializer=0)
-
-        # Get number of gradients
-        num_grads = jax.tree_util.tree_reduce(lambda x, y: x + y, jax.tree_util.tree_map(lambda x: 1, grad), initializer=0)
-
-        # Get number of momentum values
-        num_m = jax.tree_util.tree_reduce(lambda x, y: x + y, jax.tree_util.tree_map(lambda x: 1, next_rolling_features.m), initializer=0)
-
-        sum_features = jnp.array([p_sum / num_params, g_sum / num_grads, m_sum / num_m])
-
-        def _update_tensor(p, g, m):
+        def _update_tensor(p, g, m, f):
           # this doesn't work with scalar parameters, so let's reshape.
           if not p.shape:
             p = jnp.expand_dims(p, 0)
@@ -177,6 +165,9 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           # feature consisting of all momentum values
           inps.append(m)
 
+          # fish feat
+          inps.append(f)
+
           inp_stack = jnp.concatenate(inps, axis=-1)
           axis = list(range(len(p.shape)))
 
@@ -188,10 +179,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
                                 list(training_step_feature.shape[-1:]))
           stacked = jnp.tile(stacked, list(p.shape) + [1])
 
-          s_features = jnp.reshape(sum_features, [1] * len(axis) + list(sum_features.shape[-1:]))
-          s_features = jnp.tile(s_features, list(p.shape) + [1])
-
-          inp = jnp.concatenate([inp_stack, stacked, s_features], axis=-1)
+          inp = jnp.concatenate([inp_stack, stacked], axis=-1)
 
           # apply the per parameter MLP.
           output = mod.apply(theta, inp)
@@ -231,7 +219,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           return new_p
 
         next_params = jax.tree_util.tree_map(_update_tensor, opt_state.params,
-                                             grad, next_rolling_features.m)
+                                             grad, next_rolling_features.m, fish_feat)
         next_opt_state = GradNetLOptState(
             params=tree_utils.match_type(next_params, opt_state.params),
             rolling_features=tree_utils.match_type(next_rolling_features,

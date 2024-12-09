@@ -275,12 +275,14 @@ def progress_or_reset_inner_opt_state(
     # summary.summary("task_loss", l)
 
     # Get activations
-    activations = oryx.core.reap(task.loss, tag="activations")(p, key1, data)
+    ais = oryx.core.reap(task.loss, tag="activations")(p, key1, data)
+    activations = [ais[f"a_{i}"] for i in range(len(ais))]
 
     # Get tangents
-    bs = [jnp.zeros([activations['a_0'].shape[0], size]) for size in task.sizes]
+    bs = [jnp.zeros([ais['a_0'].shape[0], size]) for size in task.sizes]
     tangents = jax.grad(task.loss_with_bs, argnums=list(range(3, len(bs) + 3)))(p, key1, data, *bs)
 
+    print("OPT UPDATE")
     next_inner_opt_state = opt.update(
         inner_opt_state, g, activations=activations, tangents=tangents, loss=l, model_state=s, key=key2)
     next_inner_step = inner_step + 1
@@ -570,6 +572,7 @@ class VectorizedLOptTruncatedStep(truncated_step.VectorizedTruncatedStep,
                   outer_state,
                   theta_is_vector=False,
                   override_num_steps: Optional[int] = None):
+    print("In unroll step")
     # per-step data changes depending on if we use a extra eval batch per step.
     if self.meta_loss_split == "same_data":
       # use same batch of data
