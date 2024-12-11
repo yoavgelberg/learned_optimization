@@ -57,6 +57,7 @@ def _tanh_embedding(iterations):
 class MLPLOptState:
   params: Any
   rolling_features: common.MomAccumulator
+  gmom: common.MomAccumulator
   iteration: jnp.ndarray
   state: Any
 
@@ -87,7 +88,11 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
     # There are 19 features used as input. For now, hard code this.
-    return self._mod.init(key, jnp.zeros([0, 19]))
+    theta =  self._mod.init(key, jnp.zeros([0, 19]))
+    theta["alpha"] = jnp.array([0.1])
+    theta["beta"] = jnp.array([0.001])
+    theta["gamma"] = jnp.array([0.9])
+    return theta
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
@@ -113,6 +118,7 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
             params=params,
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
+            gmom=common.vec_rolling_mom(jnp.array([0.9])).init(params),
             iteration=jnp.asarray(0, dtype=jnp.int32))
 
       def update(
@@ -126,12 +132,18 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> MLPLOptState:
+        alpha = theta["alpha"][0]
+        beta = theta["beta"][0]
+        gamma = theta["gamma"][0]
+
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
         training_step_feature = _tanh_embedding(opt_state.iteration)
 
-        def _update_tensor(p, g, m):
+        gmom = common.vec_rolling_mom(theta["gamma"]).update(opt_state.gmom, grad)
+
+        def _update_tensor(p, g, m, gm):
           # this doesn't work with scalar parameters, so let's reshape.
           if not p.shape:
             p = jnp.expand_dims(p, 0)
@@ -175,7 +187,7 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
           magnitude = output[..., 1]
 
           # compute the step
-          step = direction * jnp.exp(magnitude * exp_mult) * step_mult
+          step = alpha * (gm + beta * direction * jnp.exp(magnitude * exp_mult) * step_mult)
           step = step.reshape(p.shape)
           new_p = p - step
           if did_reshape:
@@ -205,11 +217,12 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
           return new_p
 
         next_params = jax.tree_util.tree_map(_update_tensor, opt_state.params,
-                                             grad, next_rolling_features.m)
+                                             grad, next_rolling_features.m, gmom.m)
         next_opt_state = MLPLOptState(
             params=tree_utils.match_type(next_params, opt_state.params),
             rolling_features=tree_utils.match_type(next_rolling_features,
                                                    opt_state.rolling_features),
+            gmom=tree_utils.match_type(gmom, opt_state.gmom),
             iteration=opt_state.iteration + 1,
             state=model_state)
         return next_opt_state
