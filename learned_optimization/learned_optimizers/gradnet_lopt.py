@@ -57,6 +57,7 @@ def _tanh_embedding(iterations):
 class GradNetLOptState:
   params: Any
   rolling_features: common.MomAccumulator
+  gmom: common.MomAccumulator
   iteration: jnp.ndarray
   state: Any
 
@@ -79,13 +80,19 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
     self._exp_mult = exp_mult
     self._compute_summary = compute_summary
 
-    def ff_mod(inp):
-      return hk.nets.MLP([hidden_size] * hidden_layers + [2])(inp)
+    def ff_mod(inp1, inp2, a):
+      o1 = hk.nets.MLP([hidden_size] * hidden_layers + [2])(inp1)
+      o2 = hk.nets.MLP([hidden_size] * (hidden_layers + 1) + [1])(inp2)
+      return o1 if a else o2
 
     self._mod = hk.without_apply_rng(hk.transform(ff_mod))
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
-    return self._mod.init(key, jnp.zeros([0, 21]))
+    theta =  self._mod.init(key, jnp.zeros([0, 21]), jnp.zeros([0, 1]), False)
+    theta["alpha"] = jnp.array([0.1])
+    theta["beta"] = jnp.array([0.001])
+    theta["gamma"] = jnp.array([0.9])
+    return theta
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
@@ -111,6 +118,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
             params=params,
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
+            gmom=common.vec_rolling_mom(jnp.asarray([0.9])).init(params),
             iteration=jnp.asarray(0, dtype=jnp.int32))
 
       def update(
@@ -124,25 +132,31 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> GradNetLOptState:
-        activations = [jnp.sum(a, axis=0) for a in activations]
-        tangents = [jnp.sum(t, axis=0) for t in tangents]
+        alpha = theta["alpha"][0]
+        beta = theta["beta"][0]
+        gamma = theta["gamma"][0]
+
+        activations = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(a, axis=-1), False), axis=-1), axis=0) for a in activations]
+        tangents = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(t, axis=-1), False), axis=-1), axis=0) for t in tangents]
 
         ff = []
         for a, t in zip(activations, tangents):
           a = jnp.repeat(a[:, jnp.newaxis], t.shape[0], axis=1)
-          a = jnp.expand_dims(a, -1)
+          a = jnp.expand_dims(a, axis=-1)
           t = jnp.repeat(t[jnp.newaxis, :], a.shape[0], axis=0)
-          t = jnp.expand_dims(t, -1)
-          ff.append(jnp.concatenate([a, t], axis=-1))
+          t = jnp.expand_dims(t, axis=-1)
+          ff.append(jnp.concatenate([a,  t], axis=-1))
 
-        fish_feat = {"model/linear": {'w': ff[0], 'b': jnp.stack([activations[1], tangents[0]], axis=1)}, "model/linear_1": {'w': ff[1], 'b': jnp.stack([activations[2], tangents[1]], axis=1)}}
+        fish_feat = {"model/linear": {'w': ff[0], 'b': jnp.stack([activations[1], tangents[0]], -1)}, "model/linear_1": {'w': ff[1], 'b': jnp.stack([activations[2], tangents[1]], axis=-1)}}
 
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
+        gmom = common.vec_rolling_mom(jnp.asarray([gamma])).update(opt_state.gmom, grad)
+
         training_step_feature = _tanh_embedding(opt_state.iteration)
 
-        def _update_tensor(p, g, m, f):
+        def _update_tensor(p, g, m, f, gm):
           # this doesn't work with scalar parameters, so let's reshape.
           if not p.shape:
             p = jnp.expand_dims(p, 0)
@@ -173,6 +187,13 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
 
           inp_stack = _second_moment_normalizer(inp_stack, axis=axis)
 
+          # if len(inp_stack.shape) == 2:
+            # inp_stack.at[:, -1].multiply(opt_state.iteration + 1)
+            # inp_stack.at[:, -2].multiply(opt_state.iteration + 1)
+          # else:
+            # inp_stack.at[:, :, -1].multiply(opt_state.iteration + 1)
+            # inp_stack.at[:, :, -2].multiply(opt_state.iteration + 1)
+
           # once normalized, add features that are constant across tensor.
           # namly the training step embedding.
           stacked = jnp.reshape(training_step_feature, [1] * len(axis) +
@@ -182,14 +203,16 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           inp = jnp.concatenate([inp_stack, stacked], axis=-1)
 
           # apply the per parameter MLP.
-          output = mod.apply(theta, inp)
+          output = mod.apply(theta, inp, jnp.zeros([0, 1]), True)
 
           # split the 2 outputs up into a direction and a magnitude
           direction = output[..., 0]
           magnitude = output[..., 1]
 
+          gm = jnp.reshape(gm, direction.shape)
+
           # compute the step
-          step = direction * jnp.exp(magnitude * exp_mult) * step_mult
+          step = alpha * (gm + beta * direction * jnp.exp(magnitude * exp_mult) * step_mult)
           step = step.reshape(p.shape)
           new_p = p - step
           if did_reshape:
@@ -219,11 +242,12 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           return new_p
 
         next_params = jax.tree_util.tree_map(_update_tensor, opt_state.params,
-                                             grad, next_rolling_features.m, fish_feat)
+                                             grad, next_rolling_features.m, fish_feat, gmom.m)
         next_opt_state = GradNetLOptState(
             params=tree_utils.match_type(next_params, opt_state.params),
             rolling_features=tree_utils.match_type(next_rolling_features,
                                                    opt_state.rolling_features),
+            gmom=tree_utils.match_type(gmom,opt_state.gmom),
             iteration=opt_state.iteration + 1,
             state=model_state)
         return next_opt_state

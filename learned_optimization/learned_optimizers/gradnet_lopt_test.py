@@ -21,6 +21,7 @@ from learned_optimization.tasks import base as tasks_base
 
 from learned_optimization.learned_optimizers import base as lopt_base
 from learned_optimization.learned_optimizers import gradnet_lopt
+from learned_optimization.learned_optimizers import mlp_lopt
 from learned_optimization.optimizers import base as opt_base
 
 from learned_optimization import optimizers
@@ -37,11 +38,12 @@ if __name__ == "__main__":
     # theta = lopt.init(key)
     theta_opt = opt_base.Adam(1e-3)
 
+    # lopt = mlp_lopt.MLPLOpt()
     lopt = gradnet_lopt.GradNetLOpt()
 
-    max_length = 300
+    max_length = 2000
     trunc_sched = truncation_schedule.LogUniformLengthSchedule(
-        min_length=100, max_length=max_length)
+        min_length=2000, max_length=max_length)
 
 
     def grad_est_fn(task_family):
@@ -49,10 +51,10 @@ if __name__ == "__main__":
           task_family,
           lopt,
           trunc_sched,
-          num_tasks=4,
+          num_tasks=16,
           random_initial_iteration_offset=max_length)
       return truncated_pes.TruncatedPES(
-          truncated_step=truncated_step, trunc_length=100)
+          truncated_step=truncated_step, trunc_length=50)
 
 
     mlp_task_family = tasks_base.single_task_to_family(
@@ -72,19 +74,20 @@ if __name__ == "__main__":
     losses = []
     import tqdm
 
-    outer_train_steps = 1000
+    outer_train_steps = 50000
 
-    if False:
+    if True:
        wandb.init(
             settings=wandb.Settings(start_method="thread"),
             project="gradient-networks",
-            name="lopt",
+            name="lopt-gradnet-ds-abg",
         )
 
     for i in tqdm.trange(outer_train_steps):
       outer_trainer_state, loss, metrics = outer_trainer.update(
           outer_trainer_state, key, with_metrics=False)
       losses.append(loss)
-      wandb.log({"meta training loss": loss})
+      theta = outer_trainer.get_meta_params(outer_trainer_state)
+      wandb.log({"meta training loss": loss, "alpha": theta["alpha"], "beta": theta["beta"], "gamma": theta["gamma"]})
 
-    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_gradnet.pkl", "wb"))
+    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_gradnet_ds_abg.pkl", "wb"))
