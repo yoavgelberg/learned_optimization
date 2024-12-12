@@ -20,7 +20,8 @@ training of learned optimizers
 (https://arxiv.org/abs/1810.10180).
 """
 
-from typing import Any, Optional
+from typing import Any, Optional, Callable
+import functools
 
 import flax
 import gin
@@ -35,6 +36,19 @@ from learned_optimization.learned_optimizers import common
 from learned_optimization.optimizers import base as opt_base
 
 PRNGKey = jnp.ndarray
+
+class _Invertable:
+  """Base class to help manage hparam transformations."""
+
+  def __init__(self, forward: Callable[[jnp.ndarray], jnp.ndarray],
+               inverse: Callable[[jnp.ndarray], jnp.ndarray]):
+    self.forward = jax.jit(forward)
+    self.inverse = jax.jit(inverse)
+
+  @functools.partial(jax.jit, static_argnums=0)
+  def tree_inverse_forward(self, val):
+    f = lambda v: self.forward(self.inverse(v))
+    return jax.tree_util.tree_map(f, val)
 
 
 def _second_moment_normalizer(x, axis, eps=1e-5):
@@ -73,12 +87,18 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
                step_mult=0.001,
                hidden_size=32,
                hidden_layers=2,
-               compute_summary=True):
+               compute_summary=True,
+               initial_alpha=0.1,
+               initial_beta=0.001,
+               initial_gamma=0.9):
 
     super().__init__()
     self._step_mult = step_mult
     self._exp_mult = exp_mult
     self._compute_summary = compute_summary
+    self.initial_alpha = initial_alpha
+    self.initial_beta = initial_beta
+    self.initial_gamma = initial_gamma
 
     def ff_mod(inp1, inp2, a):
       o1 = hk.nets.MLP([hidden_size] * hidden_layers + [2])(inp1)
@@ -89,9 +109,9 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
     theta =  self._mod.init(key, jnp.zeros([0, 21]), jnp.zeros([0, 1]), False)
-    theta["alpha"] = jnp.array([0.1])
-    theta["beta"] = jnp.array([0.001])
-    theta["gamma"] = jnp.array([0.9])
+    theta["alpha"] = jnp.array([_scaled_lr.forward(self.initial_alpha)])
+    theta["beta"] = jnp.array([_scaled_lr.forward(self.initial_beta)])
+    theta["gamma"] = jnp.array([_scaled_lr.forward(self.initial_gamma)])
     return theta
 
   def opt_fn(self,
@@ -103,6 +123,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
     exp_mult = self._exp_mult
     step_mult = self._step_mult
     compute_summary = self._compute_summary
+    initial_gamma = self.inital_gamma
 
     class _Opt(opt_base.Optimizer):
       """Optimizer instance which has captured the meta-params (theta)."""
@@ -118,7 +139,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
             params=params,
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
-            gmom=common.vec_rolling_mom(jnp.asarray([0.9])).init(params),
+            gmom=common.vec_rolling_mom(jnp.asarray([initial_gamma])).init(params),
             iteration=jnp.asarray(0, dtype=jnp.int32))
 
       def update(
@@ -135,6 +156,13 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
         alpha = theta["alpha"][0]
         beta = theta["beta"][0]
         gamma = theta["gamma"][0]
+
+        alpha = _scaled_lr.inverse(alpha)
+        beta = _scaled_lr.inverse(beta)
+        gamma = _scaled_lr.inverse(gamma)
+
+        # Clip grads
+        # grad = jax.tree_util.tree_map(lambda x: jnp.clip(x, -1., 1.), grad)
 
         activations = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(a, axis=-1), False), axis=-1), axis=0) for a in activations]
         tangents = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(t, axis=-1), False), axis=-1), axis=0) for t in tangents]

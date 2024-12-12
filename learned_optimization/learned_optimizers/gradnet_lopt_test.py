@@ -38,8 +38,8 @@ if __name__ == "__main__":
     # theta = lopt.init(key)
     theta_opt = opt_base.Adam(1e-3)
 
-    # lopt = mlp_lopt.MLPLOpt()
-    lopt = gradnet_lopt.GradNetLOpt()
+    lopt = mlp_lopt.MLPLOpt()
+    # lopt = gradnet_lopt.GradNetLOpt()
 
     max_length = 2000
     trunc_sched = truncation_schedule.LogUniformLengthSchedule(
@@ -80,7 +80,7 @@ if __name__ == "__main__":
        wandb.init(
             settings=wandb.Settings(start_method="thread"),
             project="gradient-networks",
-            name="lopt-gradnet-ds-abg",
+            name="lopt-mlp-abg",
         )
 
     for i in tqdm.trange(outer_train_steps):
@@ -88,6 +88,12 @@ if __name__ == "__main__":
           outer_trainer_state, key, with_metrics=False)
       losses.append(loss)
       theta = outer_trainer.get_meta_params(outer_trainer_state)
-      wandb.log({"meta training loss": loss, "alpha": theta["alpha"], "beta": theta["beta"], "gamma": theta["gamma"]})
+      wandb.log({"meta training loss": loss, 
+          "unscaled-alpha": theta["alpha"], 
+          "unscaled-beta": theta["beta"], 
+          "unscaled-gamma": theta["gamma"], 
+          "alpha": mlp_lopt._scaled_lr.inverse(theta["alpha"]), 
+          "beta": mlp_lopt._scaled_lr.inverse(theta["beta"]), 
+          "gamma": mlp_lopt._scaled_lr.inverse(theta["gamma"])})
 
-    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_gradnet_ds_abg.pkl", "wb"))
+    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_mlp_abg.pkl", "wb"))
