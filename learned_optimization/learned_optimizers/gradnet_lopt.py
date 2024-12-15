@@ -74,7 +74,6 @@ def _tanh_embedding(iterations):
 class GradNetLOptState:
   params: Any
   rolling_features: common.MomAccumulator
-  gmom: common.MomAccumulator
   iteration: jnp.ndarray
   state: Any
 
@@ -88,45 +87,49 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
   def __init__(self,
                exp_mult=0.001,
                step_mult=0.001,
-               hidden_size=32,
-               hidden_layers=2,
-               compute_summary=True,
-               initial_alpha=0.1,
-               initial_beta=0.001,
-               initial_gamma=0.9):
+               ds_hidden_size=32,
+               ds_hidden_layers=3,
+               gradnet_hidden_size=32,
+               gradnet_hidden_layers=3,
+               grandet_features=8,
+               compute_summary=True):
 
     super().__init__()
     self._step_mult = step_mult
     self._exp_mult = exp_mult
     self._compute_summary = compute_summary
-    self.initial_alpha = initial_alpha
-    self.initial_beta = initial_beta
-    self.initial_gamma = initial_gamma
+    self._gradnet_features = grandet_features
 
-    def ff_mod(inp1, inp2, a):
-      o1 = hk.nets.MLP([hidden_size] * hidden_layers + [2])(inp1)
-      o2 = hk.nets.MLP([hidden_size] * (hidden_layers - 1)  + [12])(inp2)
-      return o1 if a else o2
+    def ff_gradnet(inp):
+      return hk.nets.MLP([gradnet_hidden_size] * gradnet_hidden_layers + [grandet_features])(inp)
 
-    self._mod = hk.without_apply_rng(hk.transform(ff_mod))
+    def ff_ds(inp):
+      return hk.nets.MLP([ds_hidden_size] * ds_hidden_layers + [2])(inp)
+
+    self._gradnet_mod = hk.without_apply_rng(hk.transform(ff_gradnet))
+    self._ds_mod = hk.without_apply_rng(hk.transform(ff_ds))
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
-    theta =  self._mod.init(key, jnp.zeros([0, 31]), jnp.zeros([0, 2]), False)
-    theta["alpha"] = jnp.array([_scaled_lr.forward(self.initial_alpha)])
-    theta["beta"] = jnp.array([_scaled_lr.forward(self.initial_beta)])
-    theta["gamma"] = jnp.array([_scaled_lr.forward(self.initial_gamma)])
-    return theta
+    key, subkey1 = jax.random.split(key)
+    key, subkey2 = jax.random.split(key)
+
+    return flax.core.FrozenDict({
+      # Init GradNet
+      "gradnet": self._gradnet_mod.init(subkey1, jnp.zeros([0, 2])),
+      # Init DeepSet
+      "ds": self._ds_mod.init(subkey2, jnp.zeros([0, 19 + 2 * self._gradnet_features]))
+    })
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
              is_training: bool = False) -> opt_base.Optimizer:
     decays = jnp.asarray([0.1, 0.5, 0.9, 0.99, 0.999, 0.9999])
 
-    mod = self._mod
+    ds_mod = self._ds_mod
+    gradnet_mod = self._gradnet_mod
     exp_mult = self._exp_mult
     step_mult = self._step_mult
     compute_summary = self._compute_summary
-    initial_gamma = self.initial_gamma
 
     class _Opt(opt_base.Optimizer):
       """Optimizer instance which has captured the meta-params (theta)."""
@@ -142,7 +145,6 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
             params=params,
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
-            gmom=common.vec_rolling_mom(jnp.asarray([initial_gamma])).init(params),
             iteration=jnp.asarray(0, dtype=jnp.int32))
 
       def update(
@@ -156,50 +158,56 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> GradNetLOptState:
-        alpha = theta["alpha"][0]
-        beta = theta["beta"][0]
-        gamma = theta["gamma"][0]
-
-        alpha = _scaled_lr.inverse(alpha)
-        beta = _scaled_lr.inverse(beta)
-        gamma = _scaled_lr.inverse(gamma)
-
         # Clip grads
         # grad = jax.tree_util.tree_map(lambda x: jnp.clip(x, -1., 1.), grad)
+        # print([a.shape for a in activations])
+        # print([t.shape for t in tangents])
 
-        # activations = [
-        #   jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(a, axis=-1), False), axis=-1), axis=0)
-        #   for a in activations
-        # ]
-        # tangents = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(t, axis=-1), False), axis=-1), axis=0) for t in tangents]
+        # List num_layers tensors of shape (B, N_i, 2), where B is the input
+        # batch size, N_i is the number of neurons in layer i. The first element of
+        # the pair is the activation and the second is the pre-activation gradient.
+        # For the first layer the activation is repeated, for the last layer the
+        # gradient is repeated.
+        neuron_features = [jnp.stack([activations[0], activations[0]], axis=-1)]
+        for i in range(1, len(activations)-1):
+          neuron_features.append(
+            jnp.stack([activations[i], tangents[i - 1]], axis=-1)
+          )
+        neuron_features.append(jnp.stack([tangents[-1], tangents[-1]], axis=-1))
 
-        ff = []
-        for a, t in zip(activations, tangents):
-          a = jnp.repeat(a[:, :, jnp.newaxis], t.shape[1], axis=2)
-          a = jnp.expand_dims(a, axis=-1)
-          t = jnp.repeat(t[:, jnp.newaxis, :], a.shape[1], axis=1)
-          t = jnp.expand_dims(t, axis=-1)
-          ff.append(jnp.concatenate([a,  t], axis=-1))
+        # Apply GradNet
+        neuron_features = [jnp.mean(gradnet_mod.apply(theta["gradnet"], nf), axis=0) for nf in neuron_features]
+
+        _fisher_features = []
+        for i in range(len(neuron_features)-1):
+          low = neuron_features[i]
+          high = neuron_features[i  + 1]
+
+          low_neurons = low.shape[0]
+          high_neurons = high.shape[0]
+
+          low_expanded = jnp.repeat(low[:, jnp.newaxis, :], high_neurons, axis=1)
+          high_expanded = jnp.repeat(high[jnp.newaxis, :, :], low_neurons, axis=0)
+
+          _fisher_features.append(jnp.concatenate([low_expanded,  high_expanded], axis=-1))
 
         fish_feat = {
           "model/linear": {
-            'w': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), ff[0], False), axis=0), 
-            'b': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), jnp.stack([activations[1], tangents[0]], -1), False), axis=0)
+            'w': _fisher_features[0],
+            'b': jnp.concatenate([neuron_features[1], neuron_features[1]], axis=-1)
           }, 
           "model/linear_1": {
-            'w': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), ff[1], False), axis=0), 
-            'b': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), jnp.stack([activations[2], tangents[1]], -1), False), axis=0)
+            'w': _fisher_features[1],
+            'b': jnp.concatenate([neuron_features[2], neuron_features[2]], axis=-1)
             }
           }
 
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
-        gmom = common.vec_rolling_mom(jnp.asarray([gamma])).update(opt_state.gmom, grad)
-
         training_step_feature = _tanh_embedding(opt_state.iteration)
 
-        def _update_tensor(p, g, m, f, gm):
+        def _update_tensor(p, g, m, f):
           # this doesn't work with scalar parameters, so let's reshape.
           if not p.shape:
             p = jnp.expand_dims(p, 0)
@@ -246,16 +254,14 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           inp = jnp.concatenate([inp_stack, stacked], axis=-1)
 
           # apply the per parameter MLP.
-          output = mod.apply(theta, inp, jnp.zeros([0, 2]), True)
+          output = ds_mod.apply(theta["ds"], inp)
 
           # split the 2 outputs up into a direction and a magnitude
           direction = output[..., 0]
           magnitude = output[..., 1]
 
-          gm = jnp.reshape(gm, direction.shape)
-
           # compute the step
-          step = alpha * (gm + beta * direction * jnp.exp(magnitude * exp_mult) * step_mult)
+          step = direction * jnp.exp(magnitude * exp_mult) * step_mult
           step = step.reshape(p.shape)
           new_p = p - step
           if did_reshape:
@@ -285,12 +291,11 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           return new_p
 
         next_params = jax.tree_util.tree_map(_update_tensor, opt_state.params,
-                                             grad, next_rolling_features.m, fish_feat, gmom.m)
+                                             grad, next_rolling_features.m, fish_feat)
         next_opt_state = GradNetLOptState(
             params=tree_utils.match_type(next_params, opt_state.params),
             rolling_features=tree_utils.match_type(next_rolling_features,
                                                    opt_state.rolling_features),
-            gmom=tree_utils.match_type(gmom,opt_state.gmom),
             iteration=opt_state.iteration + 1,
             state=model_state)
         return next_opt_state

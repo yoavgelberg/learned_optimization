@@ -77,7 +77,7 @@ if __name__ == "__main__":
        wandb.init(
             settings=wandb.Settings(start_method="thread"),
             project="gradient-networks",
-            name="lopt-gradnet++-abg",
+            name="lopt-clean-gradnet",
         )
 
     for i in tqdm.trange(outer_train_steps):
@@ -85,12 +85,6 @@ if __name__ == "__main__":
           outer_trainer_state, key, with_metrics=False)
       losses.append(loss)
       theta = outer_trainer.get_meta_params(outer_trainer_state)
-      wandb.log({"meta training loss": loss, 
-          "unscaled-alpha": theta["alpha"], 
-          "unscaled-beta": theta["beta"], 
-          "unscaled-gamma": theta["gamma"], 
-          "alpha": mlp_lopt._scaled_lr.inverse(theta["alpha"]), 
-          "beta": mlp_lopt._scaled_lr.inverse(theta["beta"]), 
-          "gamma": mlp_lopt._scaled_lr.inverse(theta["gamma"])})
+      wandb.log({"meta training loss": loss})
 
-    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_gradnet++_abg.pkl", "wb"))
+    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_clean_gradnet.pkl", "wb"))

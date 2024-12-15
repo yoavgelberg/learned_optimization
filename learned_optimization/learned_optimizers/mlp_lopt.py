@@ -20,8 +20,7 @@ training of learned optimizers
 (https://arxiv.org/abs/1810.10180).
 """
 
-from typing import Any, Optional, Callable
-import functools
+from typing import Any, Optional
 
 import flax
 import gin
@@ -37,23 +36,6 @@ from learned_optimization.optimizers import base as opt_base
 
 PRNGKey = jnp.ndarray
 
-class _Invertable:
-  """Base class to help manage hparam transformations."""
-
-  def __init__(self, forward: Callable[[jnp.ndarray], jnp.ndarray],
-               inverse: Callable[[jnp.ndarray], jnp.ndarray]):
-    self.forward = jax.jit(forward)
-    self.inverse = jax.jit(inverse)
-
-  @functools.partial(jax.jit, static_argnums=0)
-  def tree_inverse_forward(self, val):
-    f = lambda v: self.forward(self.inverse(v))
-    return jax.tree_util.tree_map(f, val)
-
-
-_scaled_lr = _Invertable(
-    forward=lambda x: 0.1 * jnp.log(x),
-    inverse=lambda x: jnp.clip(jnp.exp(10. * x), 1e-8, 1e3))
 
 def _second_moment_normalizer(x, axis, eps=1e-5):
   return x * lax.rsqrt(eps + jnp.mean(jnp.square(x), axis=axis, keepdims=True))
@@ -75,7 +57,6 @@ def _tanh_embedding(iterations):
 class MLPLOptState:
   params: Any
   rolling_features: common.MomAccumulator
-  gmom: common.MomAccumulator
   iteration: jnp.ndarray
   state: Any
 
@@ -92,17 +73,11 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
                step_mult=0.001,
                hidden_size=32,
                hidden_layers=2,
-               initial_alpha=0.1,
-               initial_beta=0.001,
-               initial_gamma=0.9,
                compute_summary=True):
 
     super().__init__()
     self._step_mult = step_mult
     self._exp_mult = exp_mult
-    self.initial_alpha = initial_alpha
-    self.initial_beta = initial_beta
-    self.initial_gamma = initial_gamma
     self._compute_summary = compute_summary
 
     def ff_mod(inp):
@@ -112,11 +87,7 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
     # There are 19 features used as input. For now, hard code this.
-    theta =  self._mod.init(key, jnp.zeros([0, 19]))
-    theta["alpha"] = jnp.array([_scaled_lr.forward(self.initial_alpha)])
-    theta["beta"] = jnp.array([_scaled_lr.forward(self.initial_beta)])
-    theta["gamma"] = jnp.array([_scaled_lr.forward(self.initial_gamma)])
-    return theta
+    return self._mod.init(key, jnp.zeros([0, 19]))
 
   def opt_fn(self,
              theta: lopt_base.MetaParams,
@@ -127,7 +98,6 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
     exp_mult = self._exp_mult
     step_mult = self._step_mult
     compute_summary = self._compute_summary
-    initial_gamma = self.initial_gamma
 
     class _Opt(opt_base.Optimizer):
       """Optimizer instance which has captured the meta-params (theta)."""
@@ -143,36 +113,25 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
             params=params,
             state=model_state,
             rolling_features=common.vec_rolling_mom(decays).init(params),
-            gmom=common.vec_rolling_mom(jnp.array([initial_gamma])).init(params),
             iteration=jnp.asarray(0, dtype=jnp.int32))
 
       def update(
           self,  # pytype: disable=signature-mismatch  # overriding-parameter-count-checks
           opt_state: MLPLOptState,
           grad: Any,
-          activations,
-          tangents,
+          activations: List[Any],
+          tangents: List[Any],
           loss: float,
           model_state: Any = None,
           is_valid: bool = False,
           key: Optional[PRNGKey] = None,
       ) -> MLPLOptState:
-        alpha = theta["alpha"][0]
-        beta = theta["beta"][0]
-        gamma = theta["gamma"][0]
-
-        alpha = _scaled_lr.inverse(alpha)
-        beta = _scaled_lr.inverse(beta)
-        gamma = _scaled_lr.inverse(gamma)
-
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
 
         training_step_feature = _tanh_embedding(opt_state.iteration)
 
-        gmom = common.vec_rolling_mom(jnp.asarray([gamma])).update(opt_state.gmom, grad)
-
-        def _update_tensor(p, g, m, gm):
+        def _update_tensor(p, g, m):
           # this doesn't work with scalar parameters, so let's reshape.
           if not p.shape:
             p = jnp.expand_dims(p, 0)
@@ -215,10 +174,8 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
           direction = output[..., 0]
           magnitude = output[..., 1]
 
-          gm = jnp.reshape(gm, direction.shape)
-
           # compute the step
-          step = alpha * (gm + beta * direction * jnp.exp(magnitude * exp_mult) * step_mult)
+          step = direction * jnp.exp(magnitude * exp_mult) * step_mult
           step = step.reshape(p.shape)
           new_p = p - step
           if did_reshape:
@@ -248,12 +205,11 @@ class MLPLOpt(lopt_base.LearnedOptimizer):
           return new_p
 
         next_params = jax.tree_util.tree_map(_update_tensor, opt_state.params,
-                                             grad, next_rolling_features.m, gmom.m)
+                                             grad, next_rolling_features.m)
         next_opt_state = MLPLOptState(
             params=tree_utils.match_type(next_params, opt_state.params),
             rolling_features=tree_utils.match_type(next_rolling_features,
                                                    opt_state.rolling_features),
-            gmom=tree_utils.match_type(gmom, opt_state.gmom),
             iteration=opt_state.iteration + 1,
             state=model_state)
         return next_opt_state
