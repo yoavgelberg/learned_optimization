@@ -50,6 +50,9 @@ class _Invertable:
     f = lambda v: self.forward(self.inverse(v))
     return jax.tree_util.tree_map(f, val)
 
+_scaled_lr = _Invertable(
+    forward=lambda x: 0.1 * jnp.log(x),
+    inverse=lambda x: jnp.clip(jnp.exp(10. * x), 1e-8, 1e3))
 
 def _second_moment_normalizer(x, axis, eps=1e-5):
   return x * lax.rsqrt(eps + jnp.mean(jnp.square(x), axis=axis, keepdims=True))
@@ -102,13 +105,13 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
 
     def ff_mod(inp1, inp2, a):
       o1 = hk.nets.MLP([hidden_size] * hidden_layers + [2])(inp1)
-      o2 = hk.nets.MLP([hidden_size] * (hidden_layers + 1) + [1])(inp2)
+      o2 = hk.nets.MLP([hidden_size] * (hidden_layers - 1)  + [12])(inp2)
       return o1 if a else o2
 
     self._mod = hk.without_apply_rng(hk.transform(ff_mod))
 
   def init(self, key: PRNGKey) -> lopt_base.MetaParams:
-    theta =  self._mod.init(key, jnp.zeros([0, 21]), jnp.zeros([0, 1]), False)
+    theta =  self._mod.init(key, jnp.zeros([0, 31]), jnp.zeros([0, 2]), False)
     theta["alpha"] = jnp.array([_scaled_lr.forward(self.initial_alpha)])
     theta["beta"] = jnp.array([_scaled_lr.forward(self.initial_beta)])
     theta["gamma"] = jnp.array([_scaled_lr.forward(self.initial_gamma)])
@@ -123,7 +126,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
     exp_mult = self._exp_mult
     step_mult = self._step_mult
     compute_summary = self._compute_summary
-    initial_gamma = self.inital_gamma
+    initial_gamma = self.initial_gamma
 
     class _Opt(opt_base.Optimizer):
       """Optimizer instance which has captured the meta-params (theta)."""
@@ -164,18 +167,30 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
         # Clip grads
         # grad = jax.tree_util.tree_map(lambda x: jnp.clip(x, -1., 1.), grad)
 
-        activations = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(a, axis=-1), False), axis=-1), axis=0) for a in activations]
-        tangents = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(t, axis=-1), False), axis=-1), axis=0) for t in tangents]
+        # activations = [
+        #   jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(a, axis=-1), False), axis=-1), axis=0)
+        #   for a in activations
+        # ]
+        # tangents = [jnp.sum(jnp.mean(mod.apply(theta, jnp.zeros([0, 21]), jnp.expand_dims(t, axis=-1), False), axis=-1), axis=0) for t in tangents]
 
         ff = []
         for a, t in zip(activations, tangents):
-          a = jnp.repeat(a[:, jnp.newaxis], t.shape[0], axis=1)
+          a = jnp.repeat(a[:, :, jnp.newaxis], t.shape[1], axis=2)
           a = jnp.expand_dims(a, axis=-1)
-          t = jnp.repeat(t[jnp.newaxis, :], a.shape[0], axis=0)
+          t = jnp.repeat(t[:, jnp.newaxis, :], a.shape[1], axis=1)
           t = jnp.expand_dims(t, axis=-1)
           ff.append(jnp.concatenate([a,  t], axis=-1))
 
-        fish_feat = {"model/linear": {'w': ff[0], 'b': jnp.stack([activations[1], tangents[0]], -1)}, "model/linear_1": {'w': ff[1], 'b': jnp.stack([activations[2], tangents[1]], axis=-1)}}
+        fish_feat = {
+          "model/linear": {
+            'w': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), ff[0], False), axis=0), 
+            'b': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), jnp.stack([activations[1], tangents[0]], -1), False), axis=0)
+          }, 
+          "model/linear_1": {
+            'w': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), ff[1], False), axis=0), 
+            'b': jnp.mean(mod.apply(theta, jnp.zeros([0, 31]), jnp.stack([activations[2], tangents[1]], -1), False), axis=0)
+            }
+          }
 
         next_rolling_features = common.vec_rolling_mom(decays).update(
             opt_state.rolling_features, grad)
@@ -231,7 +246,7 @@ class GradNetLOpt(lopt_base.LearnedOptimizer):
           inp = jnp.concatenate([inp_stack, stacked], axis=-1)
 
           # apply the per parameter MLP.
-          output = mod.apply(theta, inp, jnp.zeros([0, 1]), True)
+          output = mod.apply(theta, inp, jnp.zeros([0, 2]), True)
 
           # split the 2 outputs up into a direction and a magnitude
           direction = output[..., 0]

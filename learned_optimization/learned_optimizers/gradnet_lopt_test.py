@@ -33,13 +33,10 @@ import tqdm
 MetaParams = Any
 
 if __name__ == "__main__":
-    # key = jax.random.PRNGKey(1)
-
-    # theta = lopt.init(key)
     theta_opt = opt_base.Adam(1e-3)
 
-    lopt = mlp_lopt.MLPLOpt()
-    # lopt = gradnet_lopt.GradNetLOpt()
+    # lopt = mlp_lopt.MLPLOpt(hidden_layers=3)
+    lopt = gradnet_lopt.GradNetLOpt()
 
     max_length = 2000
     trunc_sched = truncation_schedule.LogUniformLengthSchedule(
@@ -80,7 +77,7 @@ if __name__ == "__main__":
        wandb.init(
             settings=wandb.Settings(start_method="thread"),
             project="gradient-networks",
-            name="lopt-mlp-abg",
+            name="lopt-gradnet++-abg",
         )
 
     for i in tqdm.trange(outer_train_steps):
@@ -96,4 +93,4 @@ if __name__ == "__main__":
           "beta": mlp_lopt._scaled_lr.inverse(theta["beta"]), 
           "gamma": mlp_lopt._scaled_lr.inverse(theta["gamma"])})
 
-    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_mlp_abg.pkl", "wb"))
+    pickle.dump(outer_trainer.get_meta_params(outer_trainer_state), open("lopt_gradnet++_abg.pkl", "wb"))

@@ -13,15 +13,14 @@ from learned_optimization.learned_optimizers import mlp_lopt
 
 
 task = image_mlp.HookableImageMLP_FashionMnist8_Relu32()
-lopt = gradnet_lopt.GradNetLOpt()
-# lopt = mlp_lopt.MLPLOpt()
+# lopt = gradnet_lopt.GradNetLOpt()
+lopt = mlp_lopt.MLPLOpt()
 
-theta = pickle.load(open("lopt_gradnet_ds_damping2_200pes_50000.pkl", "rb"))
+theta = pickle.load(open("lopt_mlp_abg.pkl", "rb"))
 optimizer = lopt.opt_fn(theta)
 
 train_dataset = task.datasets.train
 test_dataset = task.datasets.test
-
 
 @jax.jit
 def optstep(key, opt_state, batch):
@@ -46,8 +45,8 @@ for seed in range(30):
     wandb.init(
         settings=wandb.Settings(start_method="thread"),
         project="gradient-networks",
-        name=f"lopt-test-mlp-50000-optimizer-seed-{seed}",
-        config={"AAA": "g-ds-damping-200pes"}
+        name=f"lopt-test-mlp-abg-seed-{seed}",
+        config={"AAA": "m-abg"}
     )
     key = jax.random.PRNGKey(0)
     params = task.init(key)
