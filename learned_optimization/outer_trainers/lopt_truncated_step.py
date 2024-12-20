@@ -14,10 +14,10 @@
 # limitations under the License.
 
 """Use learned optimizer based inner problems with GradientEstimator."""
-
 import functools
 from typing import Any, Callable, Optional, Tuple, TypeVar
 
+import oryx
 import chex
 import flax
 import gin
@@ -272,6 +272,26 @@ def progress_or_reset_inner_opt_state(
       l = jax.lax.pmean(l, axis_name=axis_name)
 
     # summary.summary("task_loss", l)
+
+    # Check if task has a hookable model
+    is_hookable = hasattr(task, 'loss_with_bs')
+
+    # In case it does, get activations and tangents
+    if is_hookable:
+      # Get activations
+      ais = oryx.core.reap(task.loss, tag="activations")(p, key1, data)
+      activations = [ais[f"a_{i}"] for i in range(len(ais))]
+
+      # Get tangents
+      bs = [jnp.zeros([ais['a_0'].shape[0], size]) for size in task.sizes]
+      tangents = jax.grad(task.loss_with_bs, argnums=list(range(3, len(bs) + 3)))(p, key1, data, *bs)
+
+      next_inner_opt_state = opt.update(
+          inner_opt_state, g, activations=activations, tangents=tangents, loss=l, model_state=s, key=key2)
+      next_inner_step = inner_step + 1
+
+      return next_inner_opt_state, task_param, next_inner_step, jnp.asarray(
+          meta_loss, dtype=jnp.float32)
 
     next_inner_opt_state = opt.update(
         inner_opt_state, g, loss=l, model_state=s, key=key2)
