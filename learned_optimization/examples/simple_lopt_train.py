@@ -28,6 +28,8 @@ from learned_optimization.learned_optimizers import base as lopt_base  # pylint:
 from learned_optimization.learned_optimizers import mlp_lopt
 from learned_optimization.learned_optimizers import adafac_nominal
 from learned_optimization.research.univ_nfn.learned_opt import learned_opts
+from learned_optimization.research.gradnet.tasks import hookable_image_mlp
+from learned_optimization.research.gradnet.learned_opts import ResidualOptNFNWithGradnet
 from learned_optimization.optimizers import base as opt_base
 from learned_optimization.outer_trainers import gradient_learner
 from learned_optimization.outer_trainers import lopt_truncated_step
@@ -54,6 +56,8 @@ def train(train_log_dir: str,
       task = conv.Conv_Cifar10_8_16x32()
     elif FLAGS.task == "mlp":
       task = image_mlp.ImageMLP_FashionMnist8_Relu32()
+    elif FLAGS.task == "hookable_mlp":
+      task = hookable_image_mlp.HookableImageMLP_FashionMnist8_Relu32()
     elif FLAGS.task == "rnn":
       # task = rnn_lm.RNNLM_lm1bbytes_Patch32_IRNN128_Embed64()
       task = rnn_lm.RNNLM_lm1bbytes_Patch16_IRNN64_Embed32()
@@ -90,6 +94,12 @@ def train(train_log_dir: str,
     )
   elif FLAGS.lopt == "nfn":
     lopt = learned_opts.ResidualOptNFN(
+      task, step_mult=step_mult, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
+      nfn_type="hybrid", learnable_hp=FLAGS.learnable_hp
+    )
+  elif FLAGS.lopt == "gradnet_nfn":
+    assert FLAGS.task == "hookable_mlp", "Only hookable_mlp is supported for gradnet_nfn"
+    lopt = learned_opts.ResidualOptNFNWithGradnet(
       task, step_mult=step_mult, out_mult=out_mult, ptwise_init=FLAGS.pointwise,
       nfn_type="hybrid", learnable_hp=FLAGS.learnable_hp
     )
